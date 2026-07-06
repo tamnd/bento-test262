@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test262:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          submodules: true
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+      # The results cache is keyed internally per job (bento version + composed
+      # source), so restoring a stale one is safe and skips every job whose
+      # inputs did not change. The key is unique per run so the grown cache is
+      # saved back; restore-keys picks up the newest previous one.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/results-*.ndjson
+          key: test262-results-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            test262-results-${{ hashFiles('go.sum') }}-
+            test262-results-
+      - name: Unit tests
+        run: go test -short ./...
+      - name: Build
+        run: go build -o bin/bento262 ./cmd/bento262
+      - name: Run suite against expectations
+        run: ./bin/bento262 run
