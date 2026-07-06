@@ -1,0 +1,227 @@
+package tc39
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/tamnd/bento/pkg/build"
+	"github.com/tamnd/bento/pkg/lower"
+)
+
+// The harness measures bento's ahead-of-time path, not its interpreter. Each
+// job goes through the same pipeline `bento build` uses: type-check and lower
+// the composed test to Go in this process, compile that Go with the toolchain
+// inside a writable copy of the pinned bento module, run the binary, and judge
+// what happened. The statuses split the way the AOT path can decline or fail:
+//
+//	pass     - lowered, compiled, ran, and behaved as the test demands
+//	handback - the front end or the lowerer declined the program; the honest
+//	           edge of the compiled subset, a coverage gap rather than a bug
+//	fail     - the AOT path claimed the program and got it wrong: the emitted
+//	           Go did not compile, or the binary misbehaved
+//	timeout  - the binary ran past its budget
+//	crash    - the harness or a panic inside the compiler broke the job
+//
+// Growing pass at the expense of handback is progress; any fail is a bento
+// bug to fix.
+
+// ExecuteAOT runs one job through the AOT pipeline. moduleRoot must be a
+// writable checkout of the bento module at the same version this binary links,
+// which PrepareModuleRoot guarantees.
+func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration) (res Result) {
+	res.ID = j.ID
+	defer func() {
+		if p := recover(); p != nil {
+			res.Status = "crash"
+			res.Error = fmt.Sprintf("panic: %v", p)
+		}
+	}()
+
+	scratch, err := os.MkdirTemp("", "bento262-*")
+	if err != nil {
+		res.Status = "crash"
+		res.Error = err.Error()
+		return res
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+
+	// The AOT front door takes TypeScript entries only, and JavaScript is
+	// close enough to a syntactic subset that the composed test rides in
+	// under a .ts name; where the checker disagrees with sloppy JS, the job
+	// lands in handback, which is the truthful place for it today.
+	entry := filepath.Join(scratch, "test262.ts")
+	if err := os.WriteFile(entry, []byte(j.Source), 0o644); err != nil {
+		res.Status = "crash"
+		res.Error = err.Error()
+		return res
+	}
+
+	goSrc, err := build.Compile(entry)
+	if err != nil {
+		var nyl *lower.NotYetLowerable
+		if errors.As(err, &nyl) {
+			res.Status = "handback"
+			res.Error = "lower: " + nyl.Reason
+			return res
+		}
+		if j.NegType != "" && (j.NegPhase == "parse" || j.NegPhase == "resolution") {
+			// The test demands this source be rejected before it runs, and
+			// the build rejected it. An AOT compiler's build error is its
+			// early error.
+			res.Status = "pass"
+			return res
+		}
+		// The scratch path changes per job; fold it away so identical
+		// front-end complaints aggregate into one reason.
+		msg := strings.ReplaceAll(err.Error(), entry, "test262.ts")
+		res.Status = "handback"
+		res.Error = "front: " + firstLine(msg)
+		return res
+	}
+
+	bin, buildErr := compileGo(moduleRoot, goSrc, scratch)
+	if buildErr != nil {
+		// Emitted Go that the toolchain refuses is never acceptable: the
+		// lowerer claimed this program, so this is a bento bug, not a gap.
+		res.Status = "fail"
+		res.Error = "gobuild: " + firstLine(buildErr.Error())
+		return res
+	}
+
+	return judgeRun(j, bin, runTimeout)
+}
+
+// compileGo writes the generated program into a scratch package inside the
+// bento module tree and builds it. Building there is what lets the program's
+// import of the value package resolve against the pinned module with no
+// network; the shared GOCACHE means everything but the one main package is a
+// cache hit after the first job.
+func compileGo(moduleRoot, goSrc, scratch string) (string, error) {
+	dir, err := os.MkdirTemp(moduleRoot, "bento262-build-")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(goSrc), 0o644); err != nil {
+		return "", err
+	}
+	bin := filepath.Join(scratch, "test262bin")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", errors.New(msg)
+	}
+	return bin, nil
+}
+
+// judgeRun executes the compiled test and applies the test262 pass rules: a
+// plain test must exit clean, an async test must also print the completion
+// line, and a negative test must die mentioning the expected error.
+func judgeRun(j Job, bin string, timeout time.Duration) (res Result) {
+	res.ID = j.ID
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		res.Status = "timeout"
+		return res
+	}
+
+	if j.NegType != "" {
+		combined := stdout.String() + stderr.String()
+		if err == nil {
+			res.Status = "fail"
+			res.Error = fmt.Sprintf("expected %s during %s, exited clean", j.NegType, j.NegPhase)
+		} else if !strings.Contains(combined, j.NegType) {
+			res.Status = "fail"
+			res.Error = fmt.Sprintf("expected %s, got: %s", j.NegType, firstLine(strings.TrimSpace(combined)))
+		} else {
+			res.Status = "pass"
+		}
+		return res
+	}
+
+	if err != nil {
+		res.Status = "fail"
+		msg := firstLine(strings.TrimSpace(stderr.String()))
+		if msg == "" {
+			msg = err.Error()
+		}
+		res.Error = msg
+		return res
+	}
+	if j.Async && !strings.Contains(stdout.String(), asyncDone) {
+		res.Status = "fail"
+		res.Error = "async test exited without " + asyncDone
+		return res
+	}
+	res.Status = "pass"
+	return res
+}
+
+// PrepareModuleRoot stages a writable copy of the bento module this binary was
+// built against and returns its path plus the module version. The module cache
+// copy is read-only and go build needs to drop scratch packages inside the
+// tree, so the copy lives under dir, keyed by version so a rebuild against a
+// new bento lands in a fresh root while old ones age out with the directory.
+func PrepareModuleRoot(dir string) (root string, version string, err error) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}} {{.Version}}", "github.com/tamnd/bento").Output()
+	if err != nil {
+		return "", "", fmt.Errorf("locate bento module: %w", err)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 {
+		return "", "", fmt.Errorf("locate bento module: unexpected go list output %q", out)
+	}
+	src, version := fields[0], fields[1]
+
+	root = filepath.Join(dir, "bento-"+version)
+	if _, statErr := os.Stat(filepath.Join(root, "go.mod")); statErr == nil {
+		return root, version, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	tmp := root + ".tmp"
+	_ = os.RemoveAll(tmp)
+	if err := exec.Command("cp", "-R", src, tmp).Run(); err != nil {
+		return "", "", fmt.Errorf("copy bento module: %w", err)
+	}
+	if err := exec.Command("chmod", "-R", "u+w", tmp).Run(); err != nil {
+		return "", "", fmt.Errorf("unlock bento module copy: %w", err)
+	}
+	if err := os.Rename(tmp, root); err != nil {
+		return "", "", err
+	}
+
+	// Warm the build cache on the packages every generated program imports,
+	// so the per-test builds start as pure link steps instead of racing to
+	// compile the runtime.
+	warm := exec.Command("go", "build", "./pkg/value/...")
+	warm.Dir = root
+	warm.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := warm.CombinedOutput(); err != nil {
+		return "", "", fmt.Errorf("warm bento build cache: %v\n%s", err, out)
+	}
+	return root, version, nil
+}
