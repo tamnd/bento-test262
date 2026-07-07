@@ -87,19 +87,19 @@ func TestExecuteAOTVerdicts(t *testing.T) {
 	}
 	const timeout = 30 * 1e9
 
-	pass := ExecuteAOT(Job{ID: "a", Name: "a.ts", Source: "let n: number = 2;\nif (n !== 2) { throw new Error('no'); }\nconsole.log(n);"}, root, timeout)
+	pass := ExecuteAOT(Job{ID: "a", Name: "a.ts", Source: "let n: number = 2;\nif (n !== 2) { throw new Error('no'); }\nconsole.log(n);"}, root, timeout, nil, "")
 	if pass.Status != "pass" {
 		t.Errorf("plain pass: %+v", pass)
 	}
-	fail := ExecuteAOT(Job{ID: "b", Name: "b.ts", Source: "throw new Error('boom');"}, root, timeout)
+	fail := ExecuteAOT(Job{ID: "b", Name: "b.ts", Source: "throw new Error('boom');"}, root, timeout, nil, "")
 	if fail.Status != "fail" && fail.Status != "handback" {
 		t.Errorf("thrown error must not pass: %+v", fail)
 	}
-	neg := ExecuteAOT(Job{ID: "c", Name: "c.ts", Source: "let x = 1 +;", NegType: "SyntaxError", NegPhase: "parse"}, root, timeout)
+	neg := ExecuteAOT(Job{ID: "c", Name: "c.ts", Source: "let x = 1 +;", NegType: "SyntaxError", NegPhase: "parse"}, root, timeout, nil, "")
 	if neg.Status != "pass" {
 		t.Errorf("negative parse should pass when the build rejects: %+v", neg)
 	}
-	negMiss := ExecuteAOT(Job{ID: "d", Name: "d.ts", Source: "let ok: number = 1;\nconsole.log(ok);", NegType: "SyntaxError", NegPhase: "parse"}, root, timeout)
+	negMiss := ExecuteAOT(Job{ID: "d", Name: "d.ts", Source: "let ok: number = 1;\nconsole.log(ok);", NegType: "SyntaxError", NegPhase: "parse"}, root, timeout, nil, "")
 	if negMiss.Status != "fail" {
 		t.Errorf("negative with no error must fail: %+v", negMiss)
 	}

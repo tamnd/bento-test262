@@ -78,21 +78,42 @@ func runMain(args []string) error {
 		return err
 	}
 
+	// The tail cache is shared across bento versions: its file name carries no
+	// version, and its key is the emitted Go plus a fingerprint of the runtime
+	// the binary links. A version bump misses the results cache but hits the
+	// tail cache for every test whose lowering output did not change, which
+	// skips the go build and run that otherwise dominate a delta run.
+	runtimeHash, err := tc39.RuntimeHash(moduleRoot)
+	if err != nil {
+		return err
+	}
+	tailPath := filepath.Join(*cacheDir, "tail.ndjson")
+	tailCache, err := tc39.LoadCache(tailPath)
+	if err != nil {
+		return err
+	}
+
 	results, err := tc39.RunAll(jobs, tc39.RunOptions{
 		Workers:      *workers,
 		Timeout:      *jobTimeout,
 		Progress:     os.Stderr,
 		Cache:        cache,
+		TailCache:    tailCache,
 		BentoVersion: bentoVersion,
 		Env: []string{
 			"BENTO_MODULE_ROOT=" + moduleRoot,
 			"BENTO262_RUN_TIMEOUT=" + runTimeout.String(),
+			"BENTO262_TAILCACHE=" + tailPath,
+			"BENTO262_RUNTIME_HASH=" + runtimeHash,
 		},
 	})
 	if err != nil {
 		return err
 	}
 	if err := cache.Save(); err != nil {
+		return err
+	}
+	if err := tailCache.Save(); err != nil {
 		return err
 	}
 	for _, r := range precooked {

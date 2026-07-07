@@ -26,6 +26,11 @@ type RunOptions struct {
 	// Cache short-circuits jobs whose outcome is already recorded for this
 	// bento version; nil disables caching.
 	Cache *Cache
+	// TailCache records outcomes keyed on the emitted Go rather than the bento
+	// version, so a delta run can replay a job whose lowering output did not
+	// change without a go build. Workers consult their own read-only copy; this
+	// instance is the single writer, populated from the results as they arrive.
+	TailCache *Cache
 	// BentoVersion keys the cache.
 	BentoVersion string
 	// Env is appended to each worker's environment.
@@ -91,6 +96,9 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 		results[r.ID] = r
 		if opts.Cache != nil {
 			opts.Cache.Put(keys[r.ID], r)
+		}
+		if opts.TailCache != nil && r.TailKey != "" {
+			opts.TailCache.Put(r.TailKey, r)
 		}
 		done++
 		if opts.Progress != nil && done%1000 == 0 {

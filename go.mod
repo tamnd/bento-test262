@@ -5,7 +5,7 @@ go 1.26.4
 replace github.com/microsoft/typescript-go => github.com/tamnd/typescript v0.0.0-20260703163125-514c6b45d639
 
 require (
-	github.com/tamnd/bento v0.0.0-20260706104952-4b470ec7ce34
+	github.com/tamnd/bento v0.0.0-20260707062101-1a47d0c2acb6
 	gopkg.in/yaml.v3 v3.0.1
 )
 

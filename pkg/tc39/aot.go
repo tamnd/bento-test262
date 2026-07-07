@@ -34,8 +34,11 @@ import (
 
 // ExecuteAOT runs one job through the AOT pipeline. moduleRoot must be a
 // writable checkout of the bento module at the same version this binary links,
-// which PrepareModuleRoot guarantees.
-func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration) (res Result) {
+// which PrepareModuleRoot guarantees. When tail is non-nil the emitted Go is
+// looked up in it before the go build, so a job whose lowering output has not
+// changed since a previous run skips the build and the run; runtimeHash keys
+// that lookup to the runtime the binary would link.
+func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache, runtimeHash string) (res Result) {
 	res.ID = j.ID
 	defer func() {
 		if p := recover(); p != nil {
@@ -86,6 +89,19 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration) (res Result)
 		return res
 	}
 
+	// The emitted Go is in hand, so the verdict is now a pure function of it and
+	// the runtime it links. If a previous run already built and judged this exact
+	// program, replay that outcome and skip the go build and the run, the two
+	// costs that dominate a job once compiling is cheap.
+	if tail != nil {
+		key := TailKey(goSrc, runtimeHash, j)
+		res.TailKey = key
+		if hit, ok := tail.Get(key, j.ID); ok {
+			hit.TailKey = key
+			return hit
+		}
+	}
+
 	bin, buildErr := compileGo(moduleRoot, goSrc, scratch)
 	if buildErr != nil {
 		// Emitted Go that the toolchain refuses is never acceptable: the
@@ -95,7 +111,9 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration) (res Result)
 		return res
 	}
 
-	return judgeRun(j, bin, runTimeout)
+	judged := judgeRun(j, bin, runTimeout)
+	judged.TailKey = res.TailKey
+	return judged
 }
 
 // compileGo writes the generated program into a scratch package inside the
