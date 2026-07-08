@@ -57,6 +57,29 @@ func Discover(root string, prefixes []string) ([]Case, error) {
 	return out, nil
 }
 
+// Select narrows a discovered case list for a focused run. grep keeps only
+// cases whose relative path contains the substring, matched anywhere rather than
+// as a prefix the way the discovery filters are, so a run can home in on a
+// feature without spelling out its directory. limit then caps the count, taking
+// the first limit cases in path order; a limit of zero or less keeps them all.
+// The order Discover returns is stable, so the same grep and limit pick the same
+// slice every run.
+func Select(cases []Case, grep string, limit int) []Case {
+	if grep != "" {
+		kept := cases[:0:0]
+		for _, c := range cases {
+			if strings.Contains(c.Rel, grep) {
+				kept = append(kept, c)
+			}
+		}
+		cases = kept
+	}
+	if limit > 0 && len(cases) > limit {
+		cases = cases[:limit]
+	}
+	return cases
+}
+
 // Job is one execution of one case in one mode. A default test expands to a
 // sloppy job and a strict job; the flags collapse that to a single mode.
 type Job struct {
