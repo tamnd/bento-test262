@@ -58,6 +58,21 @@ CI restores the newest cache file and saves the grown one after each run, so a p
 The staged bento module under `.cache/bento-<version>/` is a writable copy of the pinned module.
 Generated programs are built inside it so their import of the runtime resolves against the exact version the harness links, with no network, and the shared Go build cache makes each per-test build a link step.
 
+## Reusing the runner binary
+
+The runner lowers every test in process, so its binary embeds bento's lowering.
+Reusing an old binary after a lowering edit would measure the wrong compiler, which is why a fresh build is needed whenever bento changes.
+
+`scripts/runner.sh` makes reuse safe by keying a cached binary on a hash of the bento checkout it links, the committed rev plus the working-tree diff.
+An unchanged tree hits the cache and copies the binary to `bin/bento262` in a few milliseconds; any edit lands on a fresh key and builds once.
+The base and fixed sides of an A/B get two different keys, so each side is built once and reused on every rerun.
+The cache lives under `$HOME/.cache/bento262`, overridable with `BENTO262_RUNNER_CACHE`.
+
+Keep the default Go build cache warm rather than pointing `GOCACHE` at a throwaway directory.
+The typescript-go checker is the heavy part of the build, and a warm cache keeps it a content hit so the runner build stays a link step.
+A fresh throwaway cache recompiles the whole checker per build, which is slow and can exhaust memory when several builds run at once.
+For the same reason, run with a small `-jobs` when measuring locally; every job links a static binary, and a wide pool of those peaks a lot of memory.
+
 ## What counts as a pass
 
 A normal test passes when the binary exits clean.
