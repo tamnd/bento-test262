@@ -3,6 +3,8 @@ package tc39
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -121,13 +123,37 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 // import of the value package resolve against the pinned module with no
 // network; the shared GOCACHE means everything but the one main package is a
 // cache hit after the first job.
+//
+// The package directory name is a hash of the generated source, not a random
+// suffix. The directory lives inside the module tree, so its name is the
+// package import path, and the Go build cache keys every compile and link
+// action on that path. A content-addressed name maps the same program to the
+// same import path on every run, so its compiled package and linked binary come
+// back as cache hits instead of fresh entries. The old random name (MkdirTemp)
+// minted a new import path per build, so nothing was ever reused: the cache
+// grew by one cached linked binary per built test on every run and eventually
+// filled the disk. Distinct programs still get distinct directories, but the
+// working set is bounded by the programs ever built rather than by how many
+// times the suite runs, which is what makes repeated A/B cycles cheap.
 func compileGo(moduleRoot, goSrc, scratch string) (string, error) {
-	dir, err := os.MkdirTemp(moduleRoot, "bento262-build-")
-	if err != nil {
+	sum := sha256.Sum256([]byte(goSrc))
+	dir := filepath.Join(moduleRoot, "bento262-build-"+hex.EncodeToString(sum[:12]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(goSrc), 0o644); err != nil {
+	// Two workers can reach an identical program at once, and the same program
+	// recurs across runs. Write through a per-job temp name and rename into
+	// place so a concurrent go build never reads a half-written main.go; the
+	// rename is atomic and identical bytes make the last writer harmless. The
+	// stub is left in the disposable staged module root so the next run reuses
+	// it rather than paying to recreate it.
+	main := filepath.Join(dir, "main.go")
+	tmp := filepath.Join(dir, "main.go."+filepath.Base(scratch)+".tmp")
+	if err := os.WriteFile(tmp, []byte(goSrc), 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, main); err != nil {
+		_ = os.Remove(tmp)
 		return "", err
 	}
 	bin := filepath.Join(scratch, "test262bin")
