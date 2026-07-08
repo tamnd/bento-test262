@@ -44,6 +44,8 @@ func runMain(args []string) error {
 	root := fs.String("root", "test262", "path to the test262 checkout")
 	ports := fs.String("ports", "harness", "directory of TypeScript harness ports")
 	filters := fs.String("filter", "test/language,test/built-ins,test/harness", "comma-separated path prefixes to run")
+	grep := fs.String("grep", "", "keep only cases whose path contains this substring, for a focused run")
+	limit := fs.Int("limit", 0, "cap the run to the first N matching cases in path order (0 = no cap)")
 	expPath := fs.String("expectations", "expectations/statuses.txt", "expected-statuses snapshot")
 	cacheDir := fs.String("cache", ".cache", "directory for the results cache and the staged bento module")
 	workers := fs.Int("jobs", max(4, goruntime.NumCPU()-2), "worker subprocesses")
@@ -51,37 +53,33 @@ func runMain(args []string) error {
 	jobTimeout := fs.Duration("job-timeout", 3*time.Minute, "whole-job timeout, covers a cold go build")
 	update := fs.Bool("update", false, "rewrite the expectations snapshot from this run")
 	verbose := fs.Bool("v", false, "print each unexpected result's error")
-	ephemeralCache := fs.Bool("ephemeral-cache", os.Getenv("BENTO262_EPHEMERAL_CACHE") == "1",
-		"build every test in a throwaway GOCACHE and delete it when the run ends; for shared servers, so a run leaves no go-build footprint behind")
+	lowerOnly := fs.Bool("lower-only", false,
+		"lower every job in this process and report the lowered/handback split without building or running a binary; fast and disk-safe, use --jobs to bound resident memory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	// On a shared server a run must not grow or evict the box's persistent
-	// go-build cache, and its own cache should not survive the run. With
-	// --ephemeral-cache (or BENTO262_EPHEMERAL_CACHE=1) the run builds into a
-	// fresh temp GOCACHE and removes it at the end, so the whole go-build
-	// footprint is cleaned in code rather than by hand. We only ever delete the
-	// directory we just made, never a cache that was already there, so the local
-	// Mac's persistent cache is safe: leave the flag off there and nothing here
-	// runs. Set the environment before PrepareModuleRoot, since its warm build
-	// and the per-test builds all inherit GOCACHE from this process.
-	if *ephemeralCache {
-		goCache, err := os.MkdirTemp("", "bento262-gocache-")
+	// A lower-only pass measures how far the front half gets, no go build, no
+	// binary, no cache growth, so it is the cheap and disk-safe way to size a
+	// front-door or lowerer change. It skips the module staging, the worker fan
+	// out, and the expectations snapshot entirely: it makes no run claim, only a
+	// lowering one. --jobs bounds the in-flight lowerings and with them the RAM,
+	// since each holds a checker.
+	if *lowerOnly {
+		cases, err := tc39.Discover(*root, strings.Split(*filters, ","))
 		if err != nil {
-			return fmt.Errorf("ephemeral cache: %w", err)
+			return err
 		}
-		if err := os.Setenv("GOCACHE", goCache); err != nil {
-			return fmt.Errorf("ephemeral cache: %w", err)
+		cases = tc39.Select(cases, *grep, *limit)
+		jobs, precooked, err := tc39.Jobs(*ports, cases)
+		if err != nil {
+			return err
 		}
-		fmt.Printf("ephemeral GOCACHE %s (removed when the run ends)\n", goCache)
-		defer func() {
-			if err := os.RemoveAll(goCache); err != nil {
-				fmt.Fprintf(os.Stderr, "ephemeral cache: could not remove %s: %v\n", goCache, err)
-				return
-			}
-			fmt.Printf("removed ephemeral GOCACHE %s\n", goCache)
-		}()
+		fmt.Printf("%d cases, %d jobs (%d waiting on harness ports), lower-only with %d in flight\n",
+			len(cases), len(jobs)+len(precooked), len(precooked), *workers)
+		rep := tc39.LowerOnly(jobs, precooked, *workers, os.Stdout)
+		tc39.PrintLowerReport(os.Stdout, rep, 25)
+		return nil
 	}
 
 	moduleRoot, bentoVersion, err := tc39.PrepareModuleRoot(*cacheDir)
@@ -95,6 +93,7 @@ func runMain(args []string) error {
 	if err != nil {
 		return err
 	}
+	cases = tc39.Select(cases, *grep, *limit)
 	jobs, precooked, err := tc39.Jobs(*ports, cases)
 	if err != nil {
 		return err

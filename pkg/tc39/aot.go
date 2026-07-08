@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -224,10 +225,20 @@ func judgeRun(j Job, bin string, timeout time.Duration) (res Result) {
 }
 
 // PrepareModuleRoot stages a writable copy of the bento module this binary was
-// built against and returns its path plus the module version. The module cache
-// copy is read-only and go build needs to drop scratch packages inside the
-// tree, so the copy lives under dir, keyed by version so a rebuild against a
-// new bento lands in a fresh root while old ones age out with the directory.
+// built against and returns its path plus a version that keys the cache. The
+// module cache copy is read-only and go build needs to drop scratch packages
+// inside the tree, so the copy lives under dir, keyed by version so a rebuild
+// against a new bento lands in a fresh root while old ones are pruned.
+//
+// The version is the go-list version folded together with a content fingerprint
+// of the bento source. Under the local replace this repo uses to link bento in
+// process, go list reports the frozen require-line pseudo-version no matter what
+// the working tree says, so on its own it would key the results cache to a
+// stale identity: edit a lowering, rebuild bento262, and every changed test
+// would be served its old cached result. The fingerprint fixes that. Unchanged
+// source keeps the same key and the whole run is a results-cache hit; a changed
+// source gets a new key and re-runs, while the version-agnostic tail cache still
+// skips the go build and run for every test whose emitted Go did not move.
 func PrepareModuleRoot(dir string) (root string, version string, err error) {
 	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}} {{.Version}}", "github.com/tamnd/bento").Output()
 	if err != nil {
@@ -237,12 +248,25 @@ func PrepareModuleRoot(dir string) (root string, version string, err error) {
 	if len(fields) != 2 {
 		return "", "", fmt.Errorf("locate bento module: unexpected go list output %q", out)
 	}
-	src, version := fields[0], fields[1]
+	src, listVersion := fields[0], fields[1]
+
+	fp, err := moduleFingerprint(src)
+	if err != nil {
+		return "", "", fmt.Errorf("fingerprint bento module: %w", err)
+	}
+	version = listVersion + ".h" + fp
 
 	root = filepath.Join(dir, "bento-"+version)
 	if _, statErr := os.Stat(filepath.Join(root, "go.mod")); statErr == nil {
 		return root, version, nil
 	}
+	// A new fingerprint means a new staged root; prune older ones so a stream of
+	// local edits does not pile staged module copies onto the disk.
+	defer func() {
+		if err == nil {
+			pruneStagedRoots(dir, root, 3)
+		}
+	}()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", "", err
 	}
@@ -268,4 +292,82 @@ func PrepareModuleRoot(dir string) (root string, version string, err error) {
 		return "", "", fmt.Errorf("warm bento build cache: %v\n%s", err, out)
 	}
 	return root, version, nil
+}
+
+// moduleFingerprint hashes the bento source that can change what lowering emits:
+// every non-test Go file plus go.mod, in the deterministic order WalkDir visits
+// them. Test files and testdata are skipped because they never reach a generated
+// program, and build artifacts do not live in the source tree. The result is a
+// short hex digest that is stable for an unchanged tree and moves on any edit.
+func moduleFingerprint(src string) (string, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "testdata", "node_modules":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if name != "go.mod" && (!strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go")) {
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(filepath.ToSlash(rel)))
+		h.Write([]byte{0})
+		h.Write(b)
+		h.Write([]byte{0})
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12], nil
+}
+
+// pruneStagedRoots keeps the newest keep staged bento module roots under dir and
+// removes the rest, so the content-addressed roots a run of local edits produces
+// do not accumulate on the disk. The just-staged keepRoot is always retained.
+func pruneStagedRoots(dir, keepRoot string, keep int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type staged struct {
+		path    string
+		modTime int64
+	}
+	var roots []staged
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "bento-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		roots = append(roots, staged{filepath.Join(dir, e.Name()), info.ModTime().UnixNano()})
+	}
+	if len(roots) <= keep {
+		return
+	}
+	// Newest first, so the just-staged keepRoot sorts into the retained head.
+	sort.Slice(roots, func(i, j int) bool { return roots[i].modTime > roots[j].modTime })
+	for i, r := range roots {
+		if i < keep || r.path == keepRoot {
+			continue
+		}
+		_ = os.RemoveAll(r.path)
+	}
 }
