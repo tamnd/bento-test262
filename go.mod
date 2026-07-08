@@ -1,6 +1,6 @@
 module github.com/tamnd/bento-test262
 
-go 1.26.4
+go 1.26.5
 
 replace github.com/microsoft/typescript-go => github.com/tamnd/typescript v0.0.0-20260703163125-514c6b45d639
 
