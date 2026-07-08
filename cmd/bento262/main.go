@@ -51,8 +51,37 @@ func runMain(args []string) error {
 	jobTimeout := fs.Duration("job-timeout", 3*time.Minute, "whole-job timeout, covers a cold go build")
 	update := fs.Bool("update", false, "rewrite the expectations snapshot from this run")
 	verbose := fs.Bool("v", false, "print each unexpected result's error")
+	ephemeralCache := fs.Bool("ephemeral-cache", os.Getenv("BENTO262_EPHEMERAL_CACHE") == "1",
+		"build every test in a throwaway GOCACHE and delete it when the run ends; for shared servers, so a run leaves no go-build footprint behind")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// On a shared server a run must not grow or evict the box's persistent
+	// go-build cache, and its own cache should not survive the run. With
+	// --ephemeral-cache (or BENTO262_EPHEMERAL_CACHE=1) the run builds into a
+	// fresh temp GOCACHE and removes it at the end, so the whole go-build
+	// footprint is cleaned in code rather than by hand. We only ever delete the
+	// directory we just made, never a cache that was already there, so the local
+	// Mac's persistent cache is safe: leave the flag off there and nothing here
+	// runs. Set the environment before PrepareModuleRoot, since its warm build
+	// and the per-test builds all inherit GOCACHE from this process.
+	if *ephemeralCache {
+		goCache, err := os.MkdirTemp("", "bento262-gocache-")
+		if err != nil {
+			return fmt.Errorf("ephemeral cache: %w", err)
+		}
+		if err := os.Setenv("GOCACHE", goCache); err != nil {
+			return fmt.Errorf("ephemeral cache: %w", err)
+		}
+		fmt.Printf("ephemeral GOCACHE %s (removed when the run ends)\n", goCache)
+		defer func() {
+			if err := os.RemoveAll(goCache); err != nil {
+				fmt.Fprintf(os.Stderr, "ephemeral cache: could not remove %s: %v\n", goCache, err)
+				return
+			}
+			fmt.Printf("removed ephemeral GOCACHE %s\n", goCache)
+		}()
 	}
 
 	moduleRoot, bentoVersion, err := tc39.PrepareModuleRoot(*cacheDir)
