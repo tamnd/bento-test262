@@ -183,7 +183,14 @@ func compileGo(moduleRoot, goSrc, scratch string) (string, error) {
 	// machine. The harness already gets its parallelism from running many workers,
 	// so each individual build needs little of its own. Keep it small and let
 	// BENTO262_GO_BUILD_P override.
-	cmd := exec.CommandContext(ctx, "go", "build", "-p", strconv.Itoa(goBuildParallelism()), "-o", bin, ".")
+	// Strip the debug symbol table and DWARF and trim absolute paths. The binary
+	// is built to be run once and judged, never debugged, so the symbols are dead
+	// weight; dropping them cuts the linked size roughly in half, which halves the
+	// write-once bytes the build cache accumulates and the janitor has to reclaim.
+	cmd := exec.CommandContext(ctx, "go", "build",
+		"-p", strconv.Itoa(goBuildParallelism()),
+		"-trimpath", "-ldflags=-s -w",
+		"-o", bin, ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	var stderr bytes.Buffer

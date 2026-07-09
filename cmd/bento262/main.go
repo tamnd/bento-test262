@@ -69,6 +69,8 @@ func runMain(args []string) error {
 		"lower every job in this process and report the lowered/handback split without building or running a binary; fast and disk-safe, use --jobs to bound resident memory")
 	minFreeMB := fs.Int64("min-free-disk-mb", 3072,
 		"abort before staging if the cache filesystem has less than this many MB free (0 = skip the check)")
+	goCacheMaxMB := fs.Int64("go-cache-max-mb", 8192,
+		"ceiling for the per-test go build cache; a janitor trims the coldest test binaries back under it during the run so the cache cannot fill the disk (0 = leave it unmanaged)")
 	workerMaxJobs := fs.Int("worker-max-jobs", 200,
 		"recycle a worker subprocess after this many jobs so its resident set cannot climb without bound (0 = never recycle)")
 	denyPath := fs.String("denylist", "expectations/denylist.txt",
@@ -165,6 +167,27 @@ func runMain(args []string) error {
 		return err
 	}
 
+	// Point every go build this run drives at a dedicated cache under the run's
+	// cache directory rather than the machine's shared one. Each test compiles to
+	// a distinct linked binary that, thanks to the results and tail caches, is
+	// never read back on a later run, so left in the shared cache they pile up as
+	// write-once garbage until the disk fills. A dedicated cache lets the janitor
+	// hold that pile under a ceiling without ever touching the shared cache the
+	// rest of the machine (and the checker build) depends on. The dependency
+	// archives every test links stay warm inside it, so builds are still fast.
+	// Setting it in this process's environment carries it to PrepareModuleRoot's
+	// warm build and to every worker, which inherit it.
+	goCacheDir, err := filepath.Abs(filepath.Join(*cacheDir, "go-build"))
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(goCacheDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.Setenv("GOCACHE", goCacheDir); err != nil {
+		return err
+	}
+
 	moduleRoot, bentoVersion, err := tc39.PrepareModuleRoot(*cacheDir)
 	if err != nil {
 		return err
@@ -242,6 +265,8 @@ func runMain(args []string) error {
 		MaxJobsPerWorker: *workerMaxJobs,
 		StuckAfter:       *stuckAfter,
 		Abort:            abort,
+		GoCacheDir:       goCacheDir,
+		GoCacheMaxBytes:  uint64(max(*goCacheMaxMB, 0)) << 20,
 		Env: append([]string{
 			"BENTO_MODULE_ROOT=" + moduleRoot,
 			"BENTO262_RUN_TIMEOUT=" + runTimeout.String(),
