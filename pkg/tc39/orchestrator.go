@@ -57,9 +57,18 @@ type RunOptions struct {
 	// life of the run, so the write-once test binaries the builds accumulate can
 	// never fill the disk. Empty leaves the cache unmanaged.
 	GoCacheDir string
-	// GoCacheMaxBytes is the ceiling the janitor holds GoCacheDir under. Zero
-	// disables the janitor.
+	// GoCacheMaxBytes is the ceiling the fallback janitor holds GoCacheDir under.
+	// Zero disables that fallback. It is only consulted when GoCacheBaseline is
+	// empty; with a baseline the pinned janitor holds the cache at the dependency
+	// floor and the ceiling is moot.
 	GoCacheMaxBytes uint64
+	// GoCacheBaseline is the set of build-cache entry paths present after the
+	// dependency archives are warmed into a freshly wiped cache and before the
+	// first test build. When set, the janitor pins the cache to exactly these
+	// entries, reclaiming every per-test binary a build leaves behind so the
+	// footprint stays flat at the dependency floor and can never grow across a run
+	// of any length. Empty falls back to the ceiling janitor.
+	GoCacheBaseline map[string]struct{}
 }
 
 // RunAll executes every job across a pool of worker subprocesses and returns
@@ -142,12 +151,19 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 	}
 
 	// The build cache grows by one write-once binary per test built, so a long
-	// run left unattended would fill the disk. The janitor holds it under the
-	// ceiling for the life of the run, shedding cold test binaries while the hot
-	// dependency archives stay resident. It shares stopWatch so it winds down
-	// with the collector below.
-	if opts.GoCacheDir != "" && opts.GoCacheMaxBytes > 0 {
-		go watchCache(opts.GoCacheDir, opts.GoCacheMaxBytes, 0, opts.Progress, stopWatch)
+	// run left unattended would fill the disk. With a baseline the pinned janitor
+	// reclaims every per-test binary the tick after its build finishes, holding the
+	// cache flat at the warmed dependency floor so it never grows; without one it
+	// falls back to trimming under the ceiling. Either shares stopWatch so it winds
+	// down with the collector below.
+	if opts.GoCacheDir != "" {
+		switch {
+		case len(opts.GoCacheBaseline) > 0:
+			go watchCachePinned(opts.GoCacheDir, opts.GoCacheBaseline,
+				func() time.Time { return oldestInflight(&inflight) }, 0, opts.Progress, stopWatch)
+		case opts.GoCacheMaxBytes > 0:
+			go watchCache(opts.GoCacheDir, opts.GoCacheMaxBytes, 0, opts.Progress, stopWatch)
+		}
 	}
 
 	done := 0
@@ -195,6 +211,24 @@ func watchStuck(inflight *sync.Map, after time.Duration, w io.Writer, stop <-cha
 			})
 		}
 	}
+}
+
+// oldestInflight returns the start time of the job that has been running the
+// longest, or the zero time when nothing is in flight. The pinned janitor uses it
+// as the cutoff below which a cache entry cannot belong to a running build, so it
+// never reclaims an entry a build is still reading: any entry older than the
+// oldest running build was written by a build that has already finished.
+func oldestInflight(inflight *sync.Map) time.Time {
+	var oldest time.Time
+	inflight.Range(func(_, v any) bool {
+		if started, ok := v.(time.Time); ok {
+			if oldest.IsZero() || started.Before(oldest) {
+				oldest = started
+			}
+		}
+		return true
+	})
+	return oldest
 }
 
 // stillRunning returns the IDs of the jobs left in flight, for the abort report

@@ -67,7 +67,7 @@ func runMain(args []string) error {
 	verbose := fs.Bool("v", false, "print each unexpected result's error")
 	lowerOnly := fs.Bool("lower-only", false,
 		"lower every job in this process and report the lowered/handback split without building or running a binary; fast and disk-safe, use --jobs to bound resident memory")
-	minFreeMB := fs.Int64("min-free-disk-mb", 3072,
+	minFreeMB := fs.Int64("min-free-disk-mb", 20480,
 		"abort before staging if the cache filesystem has less than this many MB free (0 = skip the check)")
 	goCacheMaxMB := fs.Int64("go-cache-max-mb", -1,
 		"ceiling for the per-test go build cache; a janitor trims the coldest test binaries back under it during the run so the cache cannot fill the disk (-1 = auto-size to the warm dependency floor plus 1 GB headroom, 0 = leave it unmanaged)")
@@ -181,6 +181,15 @@ func runMain(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Start every run from an empty build cache so the janitor's baseline captures
+	// exactly the warmed dependency archives and nothing a previous run left behind.
+	// The cross-run speedups live in the results and tail caches, which skip the
+	// build entirely for an unchanged program; the build cache only ever held
+	// per-test binaries that are never read back, so wiping it costs one dependency
+	// recompile of a few seconds and buys a footprint that stays flat all run.
+	if err := os.RemoveAll(goCacheDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(goCacheDir, 0o755); err != nil {
 		return err
 	}
@@ -199,26 +208,39 @@ func runMain(args []string) error {
 	// climb across runs.
 	tc39.SweepBuildDirs(moduleRoot)
 
-	// Size the build-cache ceiling so the footprint plateaus just above the warm
-	// dependency archives instead of climbing toward a distant fixed limit. Every
-	// per-test build only adds a write-once binary on top of those shared deps, so
-	// the floor plus a fixed headroom is all the cache ever needs; the janitor
-	// then holds it there for the life of the run and the disk never grows. An
-	// explicit --go-cache-max-mb overrides the auto size, and 0 disables the
-	// janitor. PrepareModuleRoot has already warmed the deps into this cache.
+	// Warm the dependency archives into the freshly wiped cache and snapshot them
+	// as the janitor's baseline. PrepareModuleRoot warms them when it stages a new
+	// root, but a resumed run reuses an existing root and skips that, so warm again
+	// here unconditionally to cover both paths. Everything present after the warm is
+	// a shared archive every generated program links; everything a test build adds
+	// later is per-test write-once residue the janitor reclaims, so the cache stays
+	// pinned right here for the life of the run.
+	if err := tc39.WarmDeps(moduleRoot); err != nil {
+		return err
+	}
+	goCacheBaseline, err := tc39.SnapshotCacheEntries(goCacheDir)
+	if err != nil {
+		return err
+	}
+
+	// The pinned janitor holds the cache flat at the warmed dependency floor by
+	// reclaiming every per-test binary a build leaves behind, so it never grows and
+	// no ceiling is needed. The ceiling below is only a fallback for a run without a
+	// baseline; --go-cache-max-mb still sizes it, and 0 disables the fallback. Auto
+	// sizes it to the floor plus a fixed headroom.
+	floor, ferr := tc39.GoBuildCacheBytes(goCacheDir)
+	if ferr != nil {
+		floor = 0
+	}
+	fmt.Printf("build cache: pinned to %d dependency entries (%d MB); per-test build residue reclaimed each tick\n",
+		len(goCacheBaseline), floor>>20)
 	goCacheMaxBytes := uint64(0)
 	switch {
 	case *goCacheMaxMB > 0:
 		goCacheMaxBytes = uint64(*goCacheMaxMB) << 20
 	case *goCacheMaxMB < 0:
 		const headroomMB = 1024
-		floor, ferr := tc39.GoBuildCacheBytes(goCacheDir)
-		if ferr != nil {
-			floor = 0
-		}
 		goCacheMaxBytes = floor + (headroomMB << 20)
-		fmt.Printf("build cache: dependency floor %d MB, janitor ceiling %d MB\n",
-			floor>>20, goCacheMaxBytes>>20)
 	}
 
 	prefixes := strings.Split(*filters, ",")
@@ -294,6 +316,7 @@ func runMain(args []string) error {
 		Abort:            abort,
 		GoCacheDir:       goCacheDir,
 		GoCacheMaxBytes:  goCacheMaxBytes,
+		GoCacheBaseline:  goCacheBaseline,
 		Env: append([]string{
 			"BENTO_MODULE_ROOT=" + moduleRoot,
 			"BENTO262_RUN_TIMEOUT=" + runTimeout.String(),
