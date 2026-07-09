@@ -69,8 +69,8 @@ func runMain(args []string) error {
 		"lower every job in this process and report the lowered/handback split without building or running a binary; fast and disk-safe, use --jobs to bound resident memory")
 	minFreeMB := fs.Int64("min-free-disk-mb", 3072,
 		"abort before staging if the cache filesystem has less than this many MB free (0 = skip the check)")
-	goCacheMaxMB := fs.Int64("go-cache-max-mb", 8192,
-		"ceiling for the per-test go build cache; a janitor trims the coldest test binaries back under it during the run so the cache cannot fill the disk (0 = leave it unmanaged)")
+	goCacheMaxMB := fs.Int64("go-cache-max-mb", -1,
+		"ceiling for the per-test go build cache; a janitor trims the coldest test binaries back under it during the run so the cache cannot fill the disk (-1 = auto-size to the warm dependency floor plus 1 GB headroom, 0 = leave it unmanaged)")
 	workerMaxJobs := fs.Int("worker-max-jobs", 200,
 		"recycle a worker subprocess after this many jobs so its resident set cannot climb without bound (0 = never recycle)")
 	denyPath := fs.String("denylist", "expectations/denylist.txt",
@@ -194,6 +194,33 @@ func runMain(args []string) error {
 	}
 	fmt.Printf("bento %s, module root %s\n", bentoVersion, moduleRoot)
 
+	// Clear any per-job build stub orphaned by a worker the last run killed mid
+	// build, so the run starts from a clean tree and the stub count can never
+	// climb across runs.
+	tc39.SweepBuildDirs(moduleRoot)
+
+	// Size the build-cache ceiling so the footprint plateaus just above the warm
+	// dependency archives instead of climbing toward a distant fixed limit. Every
+	// per-test build only adds a write-once binary on top of those shared deps, so
+	// the floor plus a fixed headroom is all the cache ever needs; the janitor
+	// then holds it there for the life of the run and the disk never grows. An
+	// explicit --go-cache-max-mb overrides the auto size, and 0 disables the
+	// janitor. PrepareModuleRoot has already warmed the deps into this cache.
+	goCacheMaxBytes := uint64(0)
+	switch {
+	case *goCacheMaxMB > 0:
+		goCacheMaxBytes = uint64(*goCacheMaxMB) << 20
+	case *goCacheMaxMB < 0:
+		const headroomMB = 1024
+		floor, ferr := tc39.GoBuildCacheBytes(goCacheDir)
+		if ferr != nil {
+			floor = 0
+		}
+		goCacheMaxBytes = floor + (headroomMB << 20)
+		fmt.Printf("build cache: dependency floor %d MB, janitor ceiling %d MB\n",
+			floor>>20, goCacheMaxBytes>>20)
+	}
+
 	prefixes := strings.Split(*filters, ",")
 	cases, err := tc39.Discover(*root, prefixes)
 	if err != nil {
@@ -266,7 +293,7 @@ func runMain(args []string) error {
 		StuckAfter:       *stuckAfter,
 		Abort:            abort,
 		GoCacheDir:       goCacheDir,
-		GoCacheMaxBytes:  uint64(max(*goCacheMaxMB, 0)) << 20,
+		GoCacheMaxBytes:  goCacheMaxBytes,
 		Env: append([]string{
 			"BENTO_MODULE_ROOT=" + moduleRoot,
 			"BENTO262_RUN_TIMEOUT=" + runTimeout.String(),

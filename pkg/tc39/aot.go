@@ -74,6 +74,15 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
 
+	// The generated package has to live inside the module tree so its import of
+	// the value package resolves against the pinned module, but it is write-once
+	// garbage the instant the job is judged: a per-job directory, torn down here
+	// alongside the scratch, so the build stubs never pile up in the staged root
+	// and the harness footprint stays flat across a whole suite run. The name
+	// borrows the scratch's unique suffix so two workers never collide.
+	buildDir := filepath.Join(moduleRoot, "bento262-build-"+filepath.Base(scratch))
+	defer func() { _ = os.RemoveAll(buildDir) }()
+
 	// The AOT front door takes TypeScript entries only, and JavaScript is
 	// close enough to a syntactic subset that the composed test rides in
 	// under a .ts name; where the checker disagrees with sloppy JS, the job
@@ -121,7 +130,7 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 		}
 	}
 
-	bin, buildErr := compileGo(moduleRoot, goSrc, scratch)
+	bin, buildErr := compileGo(buildDir, goSrc, scratch)
 	if buildErr != nil {
 		// Emitted Go that the toolchain refuses is never acceptable: the
 		// lowerer claimed this program, so this is a bento bug, not a gap.
@@ -135,42 +144,27 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 	return judged
 }
 
-// compileGo writes the generated program into a scratch package inside the
-// bento module tree and builds it. Building there is what lets the program's
-// import of the value package resolve against the pinned module with no
-// network; the shared GOCACHE means everything but the one main package is a
-// cache hit after the first job.
+// compileGo writes the generated program into dir, a per-job package inside the
+// bento module tree, and builds it. Building there is what lets the program's
+// import of the value package resolve against the pinned module with no network;
+// the shared GOCACHE means everything but the one main package is a cache hit
+// after the first job.
 //
-// The package directory name is a hash of the generated source, not a random
-// suffix. The directory lives inside the module tree, so its name is the
-// package import path, and the Go build cache keys every compile and link
-// action on that path. A content-addressed name maps the same program to the
-// same import path on every run, so its compiled package and linked binary come
-// back as cache hits instead of fresh entries. The old random name (MkdirTemp)
-// minted a new import path per build, so nothing was ever reused: the cache
-// grew by one cached linked binary per built test on every run and eventually
-// filled the disk. Distinct programs still get distinct directories, but the
-// working set is bounded by the programs ever built rather than by how many
-// times the suite runs, which is what makes repeated A/B cycles cheap.
-func compileGo(moduleRoot, goSrc, scratch string) (string, error) {
-	sum := sha256.Sum256([]byte(goSrc))
-	dir := filepath.Join(moduleRoot, "bento262-build-"+hex.EncodeToString(sum[:12]))
+// dir is unique per job and the caller deletes it the instant the job is judged,
+// so nothing accumulates in the staged module root. Cross-run reuse of a
+// content-addressed directory used to live here, but the results and tail caches
+// short-circuit a rerun before compileGo is ever reached, so that reuse never
+// paid off in practice; a per-job directory that is always torn down keeps the
+// footprint flat instead of leaving a stub per distinct program ever built. The
+// GOCACHE entry the build mints for the one main package and its linked binary
+// is the only write-once residue, and the run's janitor holds that under its
+// ceiling.
+func compileGo(dir, goSrc, scratch string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	// Two workers can reach an identical program at once, and the same program
-	// recurs across runs. Write through a per-job temp name and rename into
-	// place so a concurrent go build never reads a half-written main.go; the
-	// rename is atomic and identical bytes make the last writer harmless. The
-	// stub is left in the disposable staged module root so the next run reuses
-	// it rather than paying to recreate it.
 	main := filepath.Join(dir, "main.go")
-	tmp := filepath.Join(dir, "main.go."+filepath.Base(scratch)+".tmp")
-	if err := os.WriteFile(tmp, []byte(goSrc), 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, main); err != nil {
-		_ = os.Remove(tmp)
+	if err := os.WriteFile(main, []byte(goSrc), 0o644); err != nil {
 		return "", err
 	}
 	bin := filepath.Join(scratch, "test262bin")
@@ -364,6 +358,25 @@ func moduleFingerprint(src string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12], nil
+}
+
+// SweepBuildDirs removes any per-job build package left behind under root. In the
+// normal path ExecuteAOT deletes its build directory the instant the job is
+// judged, so none survive. The one exception is a worker killed mid-build on a
+// timeout: the kill is a SIGKILL, so the deferred cleanup never runs and that one
+// directory is orphaned. Left alone across many runs those orphans are what piled
+// thousands of dead stubs into the staged root. Sweeping them when the module
+// root is prepared means a run always starts clean and the count can never climb.
+func SweepBuildDirs(root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "bento262-build-") {
+			_ = os.RemoveAll(filepath.Join(root, e.Name()))
+		}
+	}
 }
 
 // pruneStagedRoots keeps the newest keep staged bento module roots under dir and

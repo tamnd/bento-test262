@@ -29,6 +29,12 @@ import (
 // by deleting the least-recently-used entries first, which sheds the cold test
 // binaries while the hot dependency archives, touched on every build, survive.
 
+// GoBuildCacheBytes reports the reclaimable size of the go build cache rooted at
+// dir, the sum the janitor holds under its ceiling. The caller uses it to read
+// the warm dependency floor once the module root is staged, so the ceiling can
+// be sized to that floor plus a fixed headroom rather than a fixed large number.
+func GoBuildCacheBytes(dir string) (uint64, error) { return goBuildCacheBytes(dir) }
+
 // goBuildCacheBytes returns the total size of the go build cache rooted at dir.
 // It sums the cache entry files under the two-hex-character subdirectories the
 // toolchain lays entries out in, skipping the bookkeeping files (trim.txt,
@@ -159,22 +165,24 @@ func isHexByte(s string) bool {
 
 // watchCache trims the build cache at dir whenever it exceeds maxBytes, on a
 // tick, until stop is closed. It is the standing guard that keeps a full suite
-// run from ever filling the disk again: the cache only grows by write-once test
+// run from ever filling the disk: the cache only grows by write-once test
 // binaries between ticks, and each tick sheds the coldest of them back under the
-// ceiling. It trims down to a fraction below the ceiling so it is not deleting a
-// handful of entries on every tick. A nil w silences the progress line.
+// ceiling. The ceiling is sized to the warm dependency floor plus a small
+// headroom, so a short tick keeps the footprint flat just above the deps rather
+// than letting it climb toward a distant limit. It trims down to a fraction
+// below the ceiling so it is not deleting a handful of entries on every tick,
+// and it trims once up front so a resumed run's leftover cache is squared away
+// before the first build rather than a tick later. A nil w silences the line.
 func watchCache(dir string, maxBytes uint64, every time.Duration, w io.Writer, stop <-chan struct{}) {
 	if dir == "" || maxBytes == 0 {
 		return
 	}
 	if every <= 0 {
-		every = 30 * time.Second
+		every = 5 * time.Second
 	}
 	// Trim below the ceiling so the next trim is a while off rather than every
 	// tick shaving the few entries added since the last one.
 	target := maxBytes - maxBytes/4
-	tick := time.NewTicker(every)
-	defer tick.Stop()
 	trim := func() {
 		size, err := goBuildCacheBytes(dir)
 		if err != nil || size <= maxBytes {
@@ -192,6 +200,9 @@ func watchCache(dir string, maxBytes uint64, every time.Duration, w io.Writer, s
 				size>>20, reclaimed>>20, maxBytes>>20)
 		}
 	}
+	trim()
+	tick := time.NewTicker(every)
+	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
