@@ -16,3 +16,14 @@
 # of the run so a crash can never wedge a worker slot; revisit when the generator
 # lowering lands.
 test/language/expressions/object/method-definition/generator-prop-name-yield-expr.js
+
+# Memory blowup: a named function expression that reassigns its own name inside
+# an eval in its body drives the checker to infer a self-referential type that
+# the lowerer then walks without bound. Before the typeExpr node budget landed in
+# bento this climbed past 6 GB in seconds and OOM-rebooted the machine; the
+# budget now hands it back, but it stays quarantined so an older bento binary
+# cannot trip the same landmine. Only the plain-function forms reach the blowup;
+# the async and generator siblings hand back at the front end first, so they are
+# left in the run. Revisit when the name-in-body-in-eval type lowers.
+test/language/expressions/function/named-no-strict-reassign-fn-name-in-body-in-eval.js
+test/language/expressions/function/named-strict-error-reassign-fn-name-in-body-in-eval.js

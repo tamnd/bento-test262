@@ -32,9 +32,9 @@ The point is to measure exactly what the compiled subset can and cannot do, and 
 > [Running safely](#running-safely) before you start a run, and never lower the
 > guards below without watching resident memory.
 >
-> One test is quarantined outright in `expectations/denylist.txt` because its
-> lowering crashes the toolchain hard enough to threaten the machine. Do not
-> remove it until the underlying gap is fixed.
+> A few tests are quarantined outright in `expectations/denylist.txt` because
+> their lowering crashes the toolchain or exhausts memory hard enough to threaten
+> the machine. Do not remove one until the underlying gap is fixed.
 
 ## Statuses
 

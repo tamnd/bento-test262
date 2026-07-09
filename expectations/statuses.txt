@@ -61043,10 +61043,8 @@ handback test/language/expressions/function/name-eval-stricteval.js#sloppy
 handback test/language/expressions/function/name.js#sloppy
 handback test/language/expressions/function/name.js#strict
 handback test/language/expressions/function/named-no-strict-reassign-fn-name-in-body-in-arrow.js#sloppy
-handback test/language/expressions/function/named-no-strict-reassign-fn-name-in-body-in-eval.js#sloppy
 handback test/language/expressions/function/named-no-strict-reassign-fn-name-in-body.js#sloppy
 handback test/language/expressions/function/named-strict-error-reassign-fn-name-in-body-in-arrow.js#strict
-handback test/language/expressions/function/named-strict-error-reassign-fn-name-in-body-in-eval.js#strict
 handback test/language/expressions/function/named-strict-error-reassign-fn-name-in-body.js#strict
 handback test/language/expressions/function/param-arguments-non-strict.js#sloppy
 handback test/language/expressions/function/param-dflt-yield-non-strict.js#sloppy
