@@ -52,6 +52,14 @@ type RunOptions struct {
 	// drain, so a caller handling an interrupt returns the partial results it has
 	// instead of losing the run. Nil never aborts.
 	Abort <-chan struct{}
+	// GoCacheDir is the go build cache the per-test builds write to. When set
+	// together with GoCacheMaxBytes a janitor keeps it under that ceiling for the
+	// life of the run, so the write-once test binaries the builds accumulate can
+	// never fill the disk. Empty leaves the cache unmanaged.
+	GoCacheDir string
+	// GoCacheMaxBytes is the ceiling the janitor holds GoCacheDir under. Zero
+	// disables the janitor.
+	GoCacheMaxBytes uint64
 }
 
 // RunAll executes every job across a pool of worker subprocesses and returns
@@ -131,6 +139,15 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 	stopWatch := make(chan struct{})
 	if opts.Progress != nil && opts.StuckAfter > 0 {
 		go watchStuck(&inflight, opts.StuckAfter, opts.Progress, stopWatch)
+	}
+
+	// The build cache grows by one write-once binary per test built, so a long
+	// run left unattended would fill the disk. The janitor holds it under the
+	// ceiling for the life of the run, shedding cold test binaries while the hot
+	// dependency archives stay resident. It shares stopWatch so it winds down
+	// with the collector below.
+	if opts.GoCacheDir != "" && opts.GoCacheMaxBytes > 0 {
+		go watchCache(opts.GoCacheDir, opts.GoCacheMaxBytes, 0, opts.Progress, stopWatch)
 	}
 
 	done := 0
