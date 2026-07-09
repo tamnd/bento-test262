@@ -135,7 +135,7 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 		// Emitted Go that the toolchain refuses is never acceptable: the
 		// lowerer claimed this program, so this is a bento bug, not a gap.
 		res.Status = "fail"
-		res.Error = "gobuild: " + firstLine(buildErr.Error())
+		res.Error = "gobuild: " + diagLine(buildErr.Error())
 		return res
 	}
 

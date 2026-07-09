@@ -96,3 +96,20 @@ func firstLine(s string) string {
 	}
 	return s
 }
+
+// diagLine returns the first go compiler diagnostic line, the one naming a
+// .go:line:col location, skipping the leading "# package" header, so a build
+// failure clusters by its actual message rather than the package path. It falls
+// back to the first line when no diagnostic line is present.
+func diagLine(s string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if strings.Contains(ln, ".go:") {
+			if len(ln) > 300 {
+				ln = ln[:300]
+			}
+			return ln
+		}
+	}
+	return firstLine(s)
+}
