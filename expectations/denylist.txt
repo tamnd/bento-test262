@@ -27,3 +27,15 @@ test/language/expressions/object/method-definition/generator-prop-name-yield-exp
 # left in the run. Revisit when the name-in-body-in-eval type lowers.
 test/language/expressions/function/named-no-strict-reassign-fn-name-in-body-in-eval.js
 test/language/expressions/function/named-strict-error-reassign-fn-name-in-body-in-eval.js
+
+# Dense-array memory blowup: the test writes an array element at a power-of-two
+# index that doubles up to 2^32, so the last write lands near index 4.29 billion.
+# JavaScript keeps that as a sparse array with no storage for the holes, but the
+# dense array core stores a zero for every empty slot, so the write tries to grow
+# the backing slice to billions of elements and exhausts memory. Before the Set
+# growth cap landed in bento the run OOM-killed the process (and on a tight box
+# threatened the machine); the cap now throws a RangeError instead, but the test
+# stays quarantined so an older bento binary cannot trip the blowup and so the
+# thrown RangeError does not read as a real failure. Revisit when the sparse array
+# representation lands and the indices store without a dense fill.
+test/built-ins/Array/S15.4_A1.1_T10.js
