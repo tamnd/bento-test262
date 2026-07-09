@@ -35,6 +35,13 @@ type RunOptions struct {
 	BentoVersion string
 	// Env is appended to each worker's environment.
 	Env []string
+	// MaxJobsPerWorker recycles a worker subprocess after it has served this
+	// many jobs, killing it so a fresh one takes over. The typescript-go checker
+	// retains per-program memory across the jobs a worker serves, so a worker's
+	// resident set climbs the longer it lives; recycling bounds that peak the way
+	// a request cap bounds a leaky application server. Zero disables recycling and
+	// a worker lives until a job kills it.
+	MaxJobsPerWorker int
 }
 
 // RunAll executes every job across a pool of worker subprocesses and returns
@@ -78,7 +85,7 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			workerLoop(jobCh, resCh, opts.Timeout, opts.Env)
+			workerLoop(jobCh, resCh, opts.Timeout, opts.Env, opts.MaxJobsPerWorker)
 		}()
 	}
 	go func() {
@@ -190,10 +197,15 @@ func (w *worker) send(j Job, timeout time.Duration) (Result, bool) {
 	}
 }
 
-// workerLoop drains the job channel through a subprocess, replacing it
-// whenever a job kills it.
-func workerLoop(jobs <-chan Job, results chan<- Result, timeout time.Duration, env []string) {
+// workerLoop drains the job channel through a subprocess, replacing it whenever
+// a job kills it and recycling it after maxJobs jobs so its resident set does
+// not climb without bound. A worker retains checker memory across the programs
+// it compiles, so a long-lived one grows until it OOM-kills the machine;
+// recycling it caps that peak, at the cost of re-parsing the bundled lib once
+// per fresh worker. A maxJobs of zero keeps a worker until a job kills it.
+func workerLoop(jobs <-chan Job, results chan<- Result, timeout time.Duration, env []string, maxJobs int) {
 	var w *worker
+	served := 0
 	defer func() {
 		if w != nil {
 			w.kill()
@@ -207,9 +219,17 @@ func workerLoop(jobs <-chan Job, results chan<- Result, timeout time.Duration, e
 				results <- Result{ID: j.ID, Status: "crash", Error: "spawn: " + err.Error()}
 				continue
 			}
+			served = 0
 		}
 		res, ok := w.send(j, timeout)
 		if !ok {
+			w.kill()
+			w = nil
+			results <- res
+			continue
+		}
+		served++
+		if maxJobs > 0 && served >= maxJobs {
 			w.kill()
 			w = nil
 		}

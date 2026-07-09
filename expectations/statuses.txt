@@ -64474,7 +64474,6 @@ handback test/language/expressions/object/method-definition/generator-params.js#
 handback test/language/expressions/object/method-definition/generator-params.js#strict
 handback test/language/expressions/object/method-definition/generator-prop-name-eval-error.js#sloppy
 handback test/language/expressions/object/method-definition/generator-prop-name-eval-error.js#strict
-crash test/language/expressions/object/method-definition/generator-prop-name-yield-expr.js#sloppy
 handback test/language/expressions/object/method-definition/generator-prop-name-yield-id.js#sloppy
 handback test/language/expressions/object/method-definition/generator-property-desc.js#sloppy
 handback test/language/expressions/object/method-definition/generator-property-desc.js#strict

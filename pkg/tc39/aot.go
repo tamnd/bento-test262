@@ -11,12 +11,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tamnd/bento/pkg/build"
 	"github.com/tamnd/bento/pkg/lower"
 )
+
+// goBuildParallelism is the -p value the per-test go build runs with. It
+// defaults low because the harness gets its throughput from many workers, not
+// from any one build's internal fan-out, and a high fan-out is what lets the
+// concurrent builds spike memory enough to OOM the machine. BENTO262_GO_BUILD_P
+// overrides it for a box with memory to spare.
+func goBuildParallelism() int {
+	const def = 2
+	if v := os.Getenv("BENTO262_GO_BUILD_P"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // The harness measures bento's ahead-of-time path, not its interpreter. Each
 // job goes through the same pipeline `bento build` uses: type-check and lower
@@ -160,7 +176,14 @@ func compileGo(moduleRoot, goSrc, scratch string) (string, error) {
 	bin := filepath.Join(scratch, "test262bin")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, ".")
+	// Bound the build's internal parallelism. go build defaults -p to GOMAXPROCS,
+	// so on a many-core box one build fans out to that many compile processes at
+	// once, each holding a few hundred MB; with several workers each running a
+	// build the transient memory multiplies into the tens of GB that can OOM the
+	// machine. The harness already gets its parallelism from running many workers,
+	// so each individual build needs little of its own. Keep it small and let
+	// BENTO262_GO_BUILD_P override.
+	cmd := exec.CommandContext(ctx, "go", "build", "-p", strconv.Itoa(goBuildParallelism()), "-o", bin, ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	var stderr bytes.Buffer

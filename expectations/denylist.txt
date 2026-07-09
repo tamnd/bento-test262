@@ -1,0 +1,18 @@
+# Quarantine list: tests that must never reach a worker.
+#
+# A line here is not a failing test. It is a test whose lowering or build is
+# known to exhaust memory or wedge the toolchain badly enough to threaten the
+# whole machine, so the run skips it entirely rather than record a verdict it
+# dared not produce. This is a last resort for a specific landmine; the general
+# memory guards (worker recycling, the per-process soft memory limit, and the
+# bounded go build -p) are what keep an ordinary run safe. See the README.
+#
+# Format: one substring per line, matched against a test's path relative to the
+# test262 root, the same match --grep uses. A blank line or a line starting with
+# # is ignored, so keep a note next to each entry saying why it is here.
+
+# Recorded compiler crash: the sloppy-mode generator with a computed property
+# name whose expression is a yield crashes the lowering path outright. Kept out
+# of the run so a crash can never wedge a worker slot; revisit when the generator
+# lowering lands.
+test/language/expressions/object/method-definition/generator-prop-name-yield-expr.js
