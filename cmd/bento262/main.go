@@ -55,8 +55,20 @@ func runMain(args []string) error {
 	verbose := fs.Bool("v", false, "print each unexpected result's error")
 	lowerOnly := fs.Bool("lower-only", false,
 		"lower every job in this process and report the lowered/handback split without building or running a binary; fast and disk-safe, use --jobs to bound resident memory")
+	minFreeMB := fs.Int64("min-free-disk-mb", 3072,
+		"abort before staging if the cache filesystem has less than this many MB free (0 = skip the check)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// Each worker holds a typescript-go checker over the bundled lib types, so
+	// oversubscribing memory is what OOM-kills a run partway through. Cap the
+	// worker count to what fits the machine's RAM before anything spawns, and say
+	// so, rather than letting the kernel reap a worker mid-build. This guards both
+	// the lower-only pass (it holds checkers too) and the full run.
+	if capped, reason := tc39.CapWorkers(*workers); reason != "" {
+		fmt.Fprintln(os.Stderr, "bento262:", reason)
+		*workers = capped
 	}
 
 	// A lower-only pass measures how far the front half gets, no go build, no
@@ -80,6 +92,15 @@ func runMain(args []string) error {
 		rep := tc39.LowerOnly(jobs, precooked, *workers, os.Stdout)
 		tc39.PrintLowerReport(os.Stdout, rep, 25)
 		return nil
+	}
+
+	// A full run stages a writable bento copy and builds one native binary per
+	// distinct program, so it can fill the disk. Check the free space on the
+	// cache filesystem up front and refuse with a clear message rather than
+	// dying with a cryptic write error deep in a go build. Skipped when the check
+	// is disabled or the platform cannot report free space.
+	if err := preflightDisk(*cacheDir, *minFreeMB); err != nil {
+		return err
 	}
 
 	moduleRoot, bentoVersion, err := tc39.PrepareModuleRoot(*cacheDir)
@@ -183,5 +204,29 @@ func runMain(args []string) error {
 		return fmt.Errorf("%d jobs drifted from %s", len(regressions)+len(improvements), *expPath)
 	}
 	fmt.Println("\nsnapshot holds")
+	return nil
+}
+
+// preflightDisk aborts the run when the filesystem backing the cache directory
+// has less than minFreeMB free. A minFreeMB of zero disables the check, and a
+// platform that cannot report free space (FreeDiskBytes returns zero) is treated
+// as "unknown" and does not block the run. The cache directory is created first
+// so the statfs targets the right filesystem even on a fresh checkout.
+func preflightDisk(cacheDir string, minFreeMB int64) error {
+	if minFreeMB <= 0 {
+		return nil
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	free, err := tc39.FreeDiskBytes(cacheDir)
+	if err != nil || free == 0 {
+		return nil
+	}
+	need := uint64(minFreeMB) << 20
+	if free < need {
+		return fmt.Errorf("only %d MB free on the cache filesystem, need %d MB (lower it with -min-free-disk-mb, or 0 to skip)",
+			free>>20, minFreeMB)
+	}
 	return nil
 }
