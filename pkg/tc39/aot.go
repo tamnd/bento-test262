@@ -309,13 +309,28 @@ func PrepareModuleRoot(dir string) (root string, version string, err error) {
 	// Warm the build cache on the packages every generated program imports,
 	// so the per-test builds start as pure link steps instead of racing to
 	// compile the runtime.
+	if err := WarmDeps(root); err != nil {
+		return "", "", err
+	}
+	return root, version, nil
+}
+
+// WarmDeps compiles the packages every generated program imports into the go
+// build cache the process GOCACHE points at, so the per-test builds start as pure
+// link steps against warm dependency archives instead of racing to compile the
+// runtime. It is also what seeds the janitor's baseline: run against a freshly
+// wiped cache it leaves behind exactly the shared dependency entries, which the
+// caller snapshots as the floor to pin the cache at for the rest of the run. The
+// import surface of the generated code sits entirely inside pkg/value's transitive
+// dependencies, so building that package warms every archive a test build links.
+func WarmDeps(root string) error {
 	warm := exec.Command("go", "build", "./pkg/value/...")
 	warm.Dir = root
 	warm.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := warm.CombinedOutput(); err != nil {
-		return "", "", fmt.Errorf("warm bento build cache: %v\n%s", err, out)
+		return fmt.Errorf("warm bento build cache: %v\n%s", err, out)
 	}
-	return root, version, nil
+	return nil
 }
 
 // moduleFingerprint hashes the bento source that can change what lowering emits:
