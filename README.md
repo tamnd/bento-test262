@@ -103,6 +103,11 @@ run stays inside the machine's RAM, and the flags below tune them.
   reports the lowered/handback split without building or running a binary. It is
   the cheap, disk-safe way to size a lowerer change. It still holds checkers, so
   bound it with `-jobs`, and pair it with `-limit` or `-grep` for a quick slice.
+  Unlike the full run it does not recycle a worker, so the checker's memory
+  accumulates in the one process and `GOMEMLIMIT` cannot collect it; a full-suite
+  lower-only would be OOM-killed before it reports. The runner refuses an unscoped
+  lower-only past a large job count for that reason, so scope it or use the full
+  run, which recycles workers.
 - `-min-free-disk-mb` (default 3072) aborts before staging if the cache
   filesystem is low, so a full run cannot fill the disk mid-build.
 

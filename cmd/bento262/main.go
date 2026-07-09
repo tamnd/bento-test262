@@ -22,6 +22,15 @@ import (
 	"github.com/tamnd/bento-test262/pkg/tc39"
 )
 
+// maxUnscopedLowerJobs bounds how many jobs a lower-only pass will run without a
+// --grep or --limit scoping it. The lower-only path lowers every job in one
+// process and does not recycle a worker, so the checker's live memory grows with
+// the job count until the kernel OOM-kills the process; the whole suite is far
+// past what a single process can hold. The ceiling sits well above any real
+// scoped slice, so it only trips on an accidental full-suite lower-only, which is
+// a machine-memory risk that reports nothing anyway.
+const maxUnscopedLowerJobs = 20000
+
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "worker" {
 		if err := tc39.WorkerMain(os.Stdin, os.Stdout); err != nil {
@@ -124,6 +133,17 @@ func runMain(args []string) error {
 		jobs, precooked, err := tc39.Jobs(*ports, cases)
 		if err != nil {
 			return err
+		}
+		// A lower-only pass runs in this one process and, unlike the full run, does
+		// not recycle a worker: the typescript-go checker's per-program memory
+		// accumulates as live memory across every job, and GOMEMLIMIT cannot collect
+		// live memory. Over the whole suite that live set outgrows RAM and the kernel
+		// OOM-kills the process before it can print a report, so an unscoped
+		// full-suite lower-only is wasted effort and a machine-memory risk. Refuse it
+		// and point at the scoped uses that stay bounded; passing --grep or --limit is
+		// the explicit acknowledgement that the slice is small enough to hold.
+		if *grep == "" && *limit == 0 && len(jobs) > maxUnscopedLowerJobs {
+			return fmt.Errorf("lower-only over the whole suite (%d jobs) accumulates checker memory in one process and will be OOM-killed before it reports; scope it with --grep or --limit, or use the full run, which recycles workers", len(jobs))
 		}
 		fmt.Printf("%d cases, %d jobs (%d waiting on harness ports), lower-only with %d in flight\n",
 			len(cases), len(jobs)+len(precooked), len(precooked), *workers)
