@@ -320,10 +320,27 @@ func PrepareModuleRoot(dir string) (root string, version string, err error) {
 // link steps against warm dependency archives instead of racing to compile the
 // runtime. It is also what seeds the janitor's baseline: run against a freshly
 // wiped cache it leaves behind exactly the shared dependency entries, which the
-// caller snapshots as the floor to pin the cache at for the rest of the run. The
-// import surface of the generated code sits entirely inside pkg/value's transitive
-// dependencies, so building that package warms every archive a test build links.
+// caller snapshots as the floor to pin the cache at for the rest of the run.
+//
+// A generated program is a package main that links pkg/value plus a wide slice of
+// the standard library (sync/atomic, bytes, encoding/binary, strconv, fmt, and so
+// on) that pkg/value does not transitively pull in. Warming only pkg/value left
+// those stdlib archives out of the baseline, so the janitor reclaimed them every
+// tick and each per-test build recompiled them from scratch: that is a full stdlib
+// compile per test instead of a link, which is both the multi-hour runtime and the
+// eviction race that produced false "no such file" gobuild fails. Warming the whole
+// standard library alongside pkg/value pins every archive a test build links, so
+// the builds stay pure link steps and the janitor never churns them. The cost is a
+// one-time bounded warm (the stdlib archive set is fixed, it does not grow across
+// the run), so disk stays flat.
 func WarmDeps(root string) error {
+	std := exec.Command("go", "build", "std")
+	std.Dir = root
+	std.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := std.CombinedOutput(); err != nil {
+		return fmt.Errorf("warm standard library build cache: %v\n%s", err, out)
+	}
+
 	warm := exec.Command("go", "build", "./pkg/value/...")
 	warm.Dir = root
 	warm.Env = append(os.Environ(), "CGO_ENABLED=0")
