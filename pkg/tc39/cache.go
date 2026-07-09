@@ -28,6 +28,12 @@ type Cache struct {
 	path    string
 	entries map[string]cacheEntry
 	added   int
+	// stream appends each new entry to the file as it is recorded, so a run that
+	// is killed partway keeps every job it already finished and the next run
+	// resumes from there instead of starting over. It is nil until BeginStream
+	// opens it. The final Save compacts the appended lines back to one per key.
+	stream *bufio.Writer
+	file   *os.File
 }
 
 // JobKey identifies a job execution for caching: the exact composed source,
@@ -72,6 +78,41 @@ func LoadCache(path string) (*Cache, error) {
 	return c, sc.Err()
 }
 
+// BeginStream opens the cache file for append so every Put is flushed to disk as
+// it happens, which is what makes an interrupted run resumable: the completed
+// jobs are already on disk, and the next run loads them and short-circuits. The
+// appended lines may repeat a key across runs, which LoadCache tolerates (last
+// line wins) and the final Save compacts. A cache without a stream keeps the old
+// behavior of holding results in memory until Save.
+func (c *Cache) BeginStream() error {
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(c.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	c.file = f
+	c.stream = bufio.NewWriter(f)
+	return nil
+}
+
+// CloseStream flushes and closes the append stream. It is safe to call when no
+// stream was opened. The caller runs it before Save so the compacting rewrite
+// does not race the append handle.
+func (c *Cache) CloseStream() error {
+	if c.stream == nil {
+		return nil
+	}
+	err := c.stream.Flush()
+	if cerr := c.file.Close(); err == nil {
+		err = cerr
+	}
+	c.stream = nil
+	c.file = nil
+	return err
+}
+
 // Get returns the cached result for a key, rebound to the job's ID.
 func (c *Cache) Get(key, id string) (Result, bool) {
 	e, ok := c.entries[key]
@@ -89,12 +130,27 @@ func (c *Cache) Put(key string, r Result) {
 	if _, ok := c.entries[key]; ok {
 		return
 	}
-	c.entries[key] = cacheEntry{Key: key, Status: r.Status, Error: r.Error}
+	e := cacheEntry{Key: key, Status: r.Status, Error: r.Error}
+	c.entries[key] = e
 	c.added++
+	// Flush the entry the moment it is recorded when streaming, so a run killed
+	// mid-flight loses nothing it already finished. A go build dwarfs a single
+	// flushed line, so paying it per result costs nothing next to what it saves.
+	if c.stream != nil {
+		if b, err := json.Marshal(e); err == nil {
+			_, _ = c.stream.Write(append(b, '\n'))
+			_ = c.stream.Flush()
+		}
+	}
 }
 
-// Save writes the cache back when this run added anything.
+// Save writes the cache back when this run added anything, compacting the
+// appended stream to one line per key. It closes the append stream first so the
+// atomic rename does not race an open handle.
 func (c *Cache) Save() error {
+	if err := c.CloseStream(); err != nil {
+		return err
+	}
 	if c.added == 0 {
 		return nil
 	}

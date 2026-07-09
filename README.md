@@ -110,6 +110,9 @@ run stays inside the machine's RAM, and the flags below tune them.
   run, which recycles workers.
 - `-min-free-disk-mb` (default 3072) aborts before staging if the cache
   filesystem is low, so a full run cannot fill the disk mid-build.
+- `-stuck-after` (default 90s) names any job still running past that long, so a
+  stall points at the wedging test instead of going quiet. Set it to `0` to
+  silence the watchdog.
 
 For a heavy full run, prefer a box with plenty of RAM and cores over the local
 Mac. On the Mac, stick to `-lower-only` with a `-limit`, or a narrow `-filter`
@@ -133,6 +136,16 @@ Every result is cached in `.cache/results-<bento version>.ndjson`, keyed by a ha
 A rerun only executes jobs whose inputs changed; bumping bento in `go.mod` invalidates everything, editing one harness port invalidates just the tests that include it.
 Timeouts and crashes are never cached.
 CI restores the newest cache file and saves the grown one after each run, so a pull request that touches nothing pays close to zero execution time.
+
+The cache is written as each result arrives, not once at the end, so a run is resumable.
+If a run is interrupted (Ctrl-C, a kill, or a crash) the jobs it already finished are on disk, and rerunning the same command replays them from the cache and continues with the rest.
+A `Ctrl-C` drains the in-flight jobs and exits cleanly with a partial summary rather than dropping the run; a second `Ctrl-C` force-kills.
+This is the way to run the whole suite when a single pass is too long to sit through: start it, stop it when you need the machine, rerun it later, and it picks up where it left off.
+
+A run that stalls is not silent.
+`-stuck-after` (default 90s) names any job still running past that long, so a wedged build or a hang points at the exact test rather than leaving the run looking merely slow.
+An interrupted run also prints the jobs that were still in flight when it stopped.
+A test that reliably wedges a worker belongs on the denylist; the name the watchdog prints is what to add.
 
 The staged bento module under `.cache/bento-<version>/` is a writable copy of the pinned module.
 Generated programs are built inside it so their import of the runtime resolves against the exact version the harness links, with no network, and the shared Go build cache makes each per-test build a link step.
