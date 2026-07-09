@@ -51775,10 +51775,8 @@ handback test/language/expressions/class/async-method/returns-async-function-ret
 handback test/language/expressions/class/async-method/returns-async-function-returns-newtarget.js#strict
 handback test/language/expressions/class/async-method/returns-async-function.js#sloppy
 handback test/language/expressions/class/async-method/returns-async-function.js#strict
-handback test/language/expressions/class/class-name-ident-await-escaped-module.js#module
 handback test/language/expressions/class/class-name-ident-await-escaped.js#sloppy
 handback test/language/expressions/class/class-name-ident-await-escaped.js#strict
-handback test/language/expressions/class/class-name-ident-await-module.js#module
 handback test/language/expressions/class/class-name-ident-await.js#sloppy
 handback test/language/expressions/class/class-name-ident-await.js#strict
 handback test/language/expressions/class/constructor-this-tdz-during-initializers.js#sloppy
@@ -67547,7 +67545,6 @@ handback test/language/module-code/top-level-await/while-dynamic-evaluation.js#m
 handback test/language/module-code/verify-dfs.js#module
 handback test/language/punctuators/S7.7_A1.js#sloppy
 handback test/language/punctuators/S7.7_A1.js#strict
-handback test/language/reserved-words/await-module.js#module
 handback test/language/reserved-words/await-script.js#sloppy
 handback test/language/reserved-words/await-script.js#strict
 handback test/language/reserved-words/ident-name-global-property-accessor.js#sloppy
@@ -68999,10 +68996,8 @@ handback test/language/statements/class/async-method/returns-async-function-retu
 handback test/language/statements/class/async-method/returns-async-function-returns-newtarget.js#strict
 handback test/language/statements/class/async-method/returns-async-function.js#sloppy
 handback test/language/statements/class/async-method/returns-async-function.js#strict
-handback test/language/statements/class/class-name-ident-await-escaped-module.js#module
 handback test/language/statements/class/class-name-ident-await-escaped.js#sloppy
 handback test/language/statements/class/class-name-ident-await-escaped.js#strict
-handback test/language/statements/class/class-name-ident-await-module.js#module
 handback test/language/statements/class/class-name-ident-await.js#sloppy
 handback test/language/statements/class/class-name-ident-await.js#strict
 handback test/language/statements/class/classelementname-abrupt-completion.js#sloppy
@@ -81756,8 +81751,6 @@ handback test/language/statements/labeled/cptn-nrml.js#strict
 handback test/language/statements/labeled/let-block-with-newline.js#sloppy
 handback test/language/statements/labeled/let-identifier-with-newline.js#sloppy
 handback test/language/statements/labeled/tco.js#strict
-handback test/language/statements/labeled/value-await-module-escaped.js#module
-handback test/language/statements/labeled/value-await-module.js#module
 handback test/language/statements/labeled/value-await-non-module-escaped.js#sloppy
 handback test/language/statements/labeled/value-await-non-module-escaped.js#strict
 handback test/language/statements/labeled/value-await-non-module.js#sloppy

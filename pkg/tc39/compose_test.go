@@ -39,6 +39,40 @@ func TestComposeStrictPrologueAndPorts(t *testing.T) {
 	}
 }
 
+func TestComposeModuleGoalMarker(t *testing.T) {
+	dir := portsDirForTest(t)
+	c := Case{Rel: "test/x.js", Source: "class await {}\n"}
+	got, err := Compose(dir, c, "module")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The empty export marks the file a module so the checker applies the Module
+	// goal's early errors, and it comes after the body so it never shifts a body
+	// line the front end would report on.
+	if !strings.Contains(got, "export {};") {
+		t.Errorf("module job missing the module-goal marker:\n%s", got)
+	}
+	body := strings.Index(got, "class await {}")
+	marker := strings.Index(got, "export {};")
+	if body < 0 || marker < body {
+		t.Errorf("marker must follow the test body:\n%s", got)
+	}
+}
+
+func TestComposeScriptHasNoModuleMarker(t *testing.T) {
+	dir := portsDirForTest(t)
+	c := Case{Rel: "test/x.js", Source: "var a = 1;\n"}
+	for _, mode := range []string{"sloppy", "strict"} {
+		got, err := Compose(dir, c, mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(got, "export {};") {
+			t.Errorf("%s job must stay a script, no module marker:\n%s", mode, got)
+		}
+	}
+}
+
 func TestComposeRawUntouched(t *testing.T) {
 	c := Case{Rel: "test/x.js", Source: "anything at all"}
 	got, err := Compose(t.TempDir(), c, "raw")

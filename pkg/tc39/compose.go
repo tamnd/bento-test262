@@ -67,5 +67,17 @@ func Compose(portsDir string, c Case, mode string) (string, error) {
 		b.WriteString("\n")
 	}
 	b.WriteString(c.Source)
+
+	// A module test runs under the Module goal, where the early errors differ
+	// from a script: await is reserved at the top level, an undeclared export
+	// is an error, and so on. typescript-go picks the goal from the syntax, so a
+	// test with no import or export of its own would parse as a script and miss
+	// those errors. An empty export at the end marks the whole composed file a
+	// module without adding a binding or shifting a body line, so the goal the
+	// checker applies matches the goal the test was written for. It is inert when
+	// the test already exports: an empty export list names nothing to collide.
+	if mode == "module" {
+		b.WriteString("\nexport {};\n")
+	}
 	return b.String(), nil
 }
