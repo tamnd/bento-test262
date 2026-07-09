@@ -13,10 +13,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tamnd/bento-test262/pkg/tc39"
@@ -71,6 +73,8 @@ func runMain(args []string) error {
 		"recycle a worker subprocess after this many jobs so its resident set cannot climb without bound (0 = never recycle)")
 	denyPath := fs.String("denylist", "expectations/denylist.txt",
 		"file of path substrings to quarantine (skip) entirely, one per line; for tests known to exhaust memory or wedge the toolchain")
+	stuckAfter := fs.Duration("stuck-after", 90*time.Second,
+		"name any job still running after this long, so a stall points at the wedging test (0 = disable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -204,6 +208,30 @@ func runMain(args []string) error {
 		return err
 	}
 
+	// Stream both caches to disk as results arrive so a run that is interrupted
+	// keeps every job it finished and the next invocation of the same command
+	// resumes from there rather than starting the suite over.
+	if err := cache.BeginStream(); err != nil {
+		return err
+	}
+	if err := tailCache.BeginStream(); err != nil {
+		return err
+	}
+
+	// An interrupt closes abort, which stops RunAll from feeding new jobs and lets
+	// the in-flight ones drain, so a Ctrl-C returns the partial results already
+	// streamed to disk instead of dropping the run. A second interrupt is left to
+	// the default handler so a wedged run can still be force-killed.
+	abort := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		fmt.Fprintln(os.Stderr, "bento262: interrupt, draining in-flight jobs (progress is saved, rerun to resume)")
+		close(abort)
+		signal.Stop(sig)
+	}()
+
 	results, err := tc39.RunAll(jobs, tc39.RunOptions{
 		Workers:          *workers,
 		Timeout:          *jobTimeout,
@@ -212,6 +240,8 @@ func runMain(args []string) error {
 		TailCache:        tailCache,
 		BentoVersion:     bentoVersion,
 		MaxJobsPerWorker: *workerMaxJobs,
+		StuckAfter:       *stuckAfter,
+		Abort:            abort,
 		Env: append([]string{
 			"BENTO_MODULE_ROOT=" + moduleRoot,
 			"BENTO262_RUN_TIMEOUT=" + runTimeout.String(),
@@ -227,6 +257,17 @@ func runMain(args []string) error {
 	}
 	if err := tailCache.Save(); err != nil {
 		return err
+	}
+
+	// An aborted run has only a partial picture, so it reports what it recorded
+	// and stops rather than diffing a half-suite against the full snapshot and
+	// crying regression for every job it never got to.
+	select {
+	case <-abort:
+		tc39.Summarize(os.Stdout, results)
+		fmt.Println("\ninterrupted: partial results saved to the cache, rerun the same command to resume")
+		return nil
+	default:
 	}
 	for _, r := range precooked {
 		results[r.ID] = r

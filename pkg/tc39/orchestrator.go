@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,15 @@ type RunOptions struct {
 	// a request cap bounds a leaky application server. Zero disables recycling and
 	// a worker lives until a job kills it.
 	MaxJobsPerWorker int
+	// StuckAfter names any job that has been running longer than this to Progress,
+	// so a run that stalls points at the exact test wedging a worker rather than
+	// going silent. It covers a cold go build with margin; zero disables the
+	// watchdog.
+	StuckAfter time.Duration
+	// Abort stops feeding new jobs when it is closed and lets the in-flight ones
+	// drain, so a caller handling an interrupt returns the partial results it has
+	// instead of losing the run. Nil never aborts.
+	Abort <-chan struct{}
 }
 
 // RunAll executes every job across a pool of worker subprocesses and returns
@@ -80,16 +90,33 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 
 	jobCh := make(chan Job)
 	resCh := make(chan Result)
+	// inflight maps a running job's ID to the time it was handed to a worker, so
+	// the watchdog can name a job that has been running too long and an abort can
+	// report exactly what was still running when it stopped.
+	var inflight sync.Map
 	var wg sync.WaitGroup
 	for i := 0; i < opts.Workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			workerLoop(jobCh, resCh, opts.Timeout, opts.Env, opts.MaxJobsPerWorker)
+			workerLoop(jobCh, resCh, opts.Timeout, opts.Env, opts.MaxJobsPerWorker, &inflight)
 		}()
 	}
 	go func() {
 		for _, j := range todo {
+			if opts.Abort != nil {
+				select {
+				case <-opts.Abort:
+					// Stop feeding on an interrupt and let the in-flight jobs drain, so
+					// the caller returns the partial results it has already recorded.
+					close(jobCh)
+					wg.Wait()
+					close(resCh)
+					return
+				case jobCh <- j:
+				}
+				continue
+			}
 			jobCh <- j
 		}
 		close(jobCh)
@@ -98,6 +125,14 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 	}()
 
 	start := time.Now()
+	// The watchdog names any job that has outrun StuckAfter, so a stall points at
+	// the test wedging a worker instead of the run going quiet. It stops when the
+	// collector closes stopWatch below.
+	stopWatch := make(chan struct{})
+	if opts.Progress != nil && opts.StuckAfter > 0 {
+		go watchStuck(&inflight, opts.StuckAfter, opts.Progress, stopWatch)
+	}
+
 	done := 0
 	for r := range resCh {
 		results[r.ID] = r
@@ -112,7 +147,50 @@ func RunAll(jobs []Job, opts RunOptions) (map[string]Result, error) {
 			fmt.Fprintf(opts.Progress, "%d/%d executed, %s elapsed\n", done, len(todo), time.Since(start).Round(time.Second))
 		}
 	}
+	close(stopWatch)
+	if opts.Progress != nil {
+		if names := stillRunning(&inflight); len(names) > 0 {
+			fmt.Fprintf(opts.Progress, "stopped with %d job(s) still running: %s\n", len(names), strings.Join(names, ", "))
+		}
+	}
 	return results, nil
+}
+
+// watchStuck logs any job that has been running longer than after, on a tick,
+// until stop is closed. It is the run's answer to a silent stall: a job that
+// wedges a worker in a runaway build or a hang is named with its elapsed time
+// rather than leaving the run looking merely slow.
+func watchStuck(inflight *sync.Map, after time.Duration, w io.Writer, stop <-chan struct{}) {
+	tick := time.NewTicker(after)
+	defer tick.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-tick.C:
+			inflight.Range(func(k, v any) bool {
+				if started, ok := v.(time.Time); ok {
+					if elapsed := now.Sub(started); elapsed >= after {
+						fmt.Fprintf(w, "slow: %s running %s (build or hang wedging a worker)\n", k, elapsed.Round(time.Second))
+					}
+				}
+				return true
+			})
+		}
+	}
+}
+
+// stillRunning returns the IDs of the jobs left in flight, for the abort report
+// that tells the caller what was running when the run stopped.
+func stillRunning(inflight *sync.Map) []string {
+	var names []string
+	inflight.Range(func(k, _ any) bool {
+		if id, ok := k.(string); ok {
+			names = append(names, id)
+		}
+		return true
+	})
+	return names
 }
 
 // worker owns one subprocess and its pipes.
@@ -203,7 +281,7 @@ func (w *worker) send(j Job, timeout time.Duration) (Result, bool) {
 // it compiles, so a long-lived one grows until it OOM-kills the machine;
 // recycling it caps that peak, at the cost of re-parsing the bundled lib once
 // per fresh worker. A maxJobs of zero keeps a worker until a job kills it.
-func workerLoop(jobs <-chan Job, results chan<- Result, timeout time.Duration, env []string, maxJobs int) {
+func workerLoop(jobs <-chan Job, results chan<- Result, timeout time.Duration, env []string, maxJobs int, inflight *sync.Map) {
 	var w *worker
 	served := 0
 	defer func() {
@@ -221,7 +299,9 @@ func workerLoop(jobs <-chan Job, results chan<- Result, timeout time.Duration, e
 			}
 			served = 0
 		}
+		inflight.Store(j.ID, time.Now())
 		res, ok := w.send(j, timeout)
+		inflight.Delete(j.ID)
 		if !ok {
 			w.kill()
 			w = nil
