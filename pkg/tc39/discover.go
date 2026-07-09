@@ -6,8 +6,19 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
+
+// composeConcurrency bounds the parallel discovery and compose steps. These
+// stages only read files and stitch strings, so they hold no checker and are
+// safe to run wide; the memory cap that guards the build workers does not apply
+// here. Left at one on a single-core box so the pool degrades to serial.
+func composeConcurrency() int {
+	return max(runtime.NumCPU(), 1)
+}
 
 // Case is one test file with its parsed frontmatter and raw source.
 type Case struct {
@@ -24,7 +35,12 @@ type Case struct {
 // the given relative prefixes, sorted by path. Fixture files are modules other
 // tests import, never run on their own, so they are left out.
 func Discover(root string, prefixes []string) ([]Case, error) {
-	var out []Case
+	// Collect the runnable paths first, in the deterministic order WalkDir
+	// yields, then read and parse them in parallel. Reading and frontmatter
+	// parsing dominate discovery time and neither touches shared state, so a
+	// bounded pool cuts the wall-clock without disturbing the output order:
+	// results land in slots keyed by path index and the slice stays sorted.
+	var paths []string
 	for _, prefix := range prefixes {
 		base := filepath.Join(root, filepath.FromSlash(prefix))
 		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
@@ -34,6 +50,19 @@ func Discover(root string, prefixes []string) ([]Case, error) {
 			if d.IsDir() || !strings.HasSuffix(path, ".js") || strings.HasSuffix(path, "_FIXTURE.js") {
 				return nil
 			}
+			paths = append(paths, path)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	out := make([]Case, len(paths))
+	var g errgroup.Group
+	g.SetLimit(composeConcurrency())
+	for i, path := range paths {
+		g.Go(func() error {
 			src, err := os.ReadFile(path)
 			if err != nil {
 				return err
@@ -47,12 +76,12 @@ func Discover(root string, prefixes []string) ([]Case, error) {
 			if err != nil {
 				return fmt.Errorf("%s: %w", rel, err)
 			}
-			out = append(out, Case{Rel: rel, Abs: path, Meta: meta, Source: string(src)})
+			out[i] = Case{Rel: rel, Abs: path, Meta: meta, Source: string(src)}
 			return nil
 		})
-		if err != nil {
-			return nil, err
-		}
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -99,39 +128,62 @@ type Job struct {
 // handback result instead of a job; the missing port is a coverage gap the
 // summary should count, not an error that stops the run.
 func Jobs(portsDir string, cases []Case) ([]Job, []Result, error) {
+	// Composing a case reads its harness includes and stitches the source; it is
+	// independent per case and CPU/IO bound, so it runs in a bounded pool. Each
+	// case writes its jobs and precooked handbacks into its own slot, then the
+	// slots concatenate in case order, keeping the deterministic ordering the
+	// expectations files and reports depend on.
+	type composed struct {
+		jobs      []Job
+		precooked []Result
+	}
+	slots := make([]composed, len(cases))
+	var g errgroup.Group
+	g.SetLimit(composeConcurrency())
+	for i, c := range cases {
+		g.Go(func() error {
+			modes, err := modesOf(c.Meta)
+			if err != nil {
+				return fmt.Errorf("%s: %w", c.Rel, err)
+			}
+			for _, mode := range modes {
+				src, err := Compose(portsDir, c, mode)
+				if err != nil {
+					var unported *UnportedInclude
+					if errors.As(err, &unported) {
+						slots[i].precooked = append(slots[i].precooked, Result{
+							ID:     c.Rel + "#" + mode,
+							Status: "handback",
+							Error:  unported.Error(),
+						})
+						continue
+					}
+					return fmt.Errorf("%s: %w", c.Rel, err)
+				}
+				j := Job{
+					ID:     c.Rel + "#" + mode,
+					Name:   c.Abs,
+					Source: src,
+					Async:  c.Meta.HasFlag("async"),
+				}
+				if c.Meta.Negative != nil {
+					j.NegType = c.Meta.Negative.Type
+					j.NegPhase = c.Meta.Negative.Phase
+				}
+				slots[i].jobs = append(slots[i].jobs, j)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, nil, err
+	}
+
 	var out []Job
 	var precooked []Result
-	for _, c := range cases {
-		modes, err := modesOf(c.Meta)
-		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", c.Rel, err)
-		}
-		for _, mode := range modes {
-			src, err := Compose(portsDir, c, mode)
-			if err != nil {
-				var unported *UnportedInclude
-				if errors.As(err, &unported) {
-					precooked = append(precooked, Result{
-						ID:     c.Rel + "#" + mode,
-						Status: "handback",
-						Error:  unported.Error(),
-					})
-					continue
-				}
-				return nil, nil, fmt.Errorf("%s: %w", c.Rel, err)
-			}
-			j := Job{
-				ID:     c.Rel + "#" + mode,
-				Name:   c.Abs,
-				Source: src,
-				Async:  c.Meta.HasFlag("async"),
-			}
-			if c.Meta.Negative != nil {
-				j.NegType = c.Meta.Negative.Type
-				j.NegPhase = c.Meta.Negative.Phase
-			}
-			out = append(out, j)
-		}
+	for i := range slots {
+		out = append(out, slots[i].jobs...)
+		precooked = append(precooked, slots[i].precooked...)
 	}
 	return out, precooked, nil
 }

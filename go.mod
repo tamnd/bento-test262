@@ -6,6 +6,8 @@ replace github.com/microsoft/typescript-go => github.com/tamnd/typescript v0.0.0
 
 require (
 	github.com/tamnd/bento v0.0.0-20260707062101-1a47d0c2acb6
+	golang.org/x/sync v0.21.0
+	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -16,8 +18,6 @@ require (
 	github.com/microsoft/typescript-go v0.0.0-00010101000000-000000000000 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 )
