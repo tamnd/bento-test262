@@ -72,6 +72,23 @@ func CapWorkers(requested int) (capped int, reason string) {
 		requested, safe, humanBytes(perWorkerMemBytes()), memFraction()*100, humanBytes(total))
 }
 
+// MemoryLimitBytes returns the soft heap limit a single process should run
+// under: the memFraction share of physical RAM. A zero return means the
+// platform did not report memory and the caller should leave the runtime
+// default in place. The limit makes the Go runtime collect before the heap runs
+// away, which matters because the typescript-go checker retains per-program
+// state across the jobs one process serves; without a limit a long run climbs
+// until it OOM-kills the machine. It is the soft companion to worker recycling,
+// which resets the resident set outright, and to CapWorkers, which bounds how
+// many of these run at once.
+func MemoryLimitBytes() int64 {
+	total := totalMem()
+	if total == 0 {
+		return 0
+	}
+	return int64(float64(total) * memFraction())
+}
+
 // humanBytes formats a byte count as a short human-readable string.
 func humanBytes(b uint64) string {
 	const unit = 1024

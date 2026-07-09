@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,6 +33,17 @@ const asyncDone = "Test262:AsyncTestComplete"
 // replaces the worker. The module root and run timeout arrive by environment
 // because the orchestrator sets them once for every worker it spawns.
 func WorkerMain(in io.Reader, out io.Writer) error {
+	// The checker retains per-program memory across the jobs this worker serves,
+	// so a soft heap limit makes the runtime collect before the resident set runs
+	// away and the machine OOMs. The orchestrator sizes it per worker so the pool
+	// stays inside the RAM budget; recycling caps the peak, this keeps a single
+	// runaway program from blowing past it in the meantime.
+	if v := os.Getenv("BENTO262_WORKER_MEMLIMIT"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			debug.SetMemoryLimit(n)
+		}
+	}
+
 	root := os.Getenv("BENTO_MODULE_ROOT")
 	if root == "" {
 		return fmt.Errorf("worker: BENTO_MODULE_ROOT is not set")

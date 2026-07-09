@@ -6,6 +6,36 @@ Every job goes through the same pipeline `bento build` ships: type-check and low
 There is no interpreter in the loop.
 The point is to measure exactly what the compiled subset can and cannot do, and to turn the gap into a ranked work order for the lowerer.
 
+> [!WARNING]
+> A full run can OOM and hard-reboot the machine. This has happened.
+>
+> Every job holds a typescript-go checker, and each `go build` fans out to
+> `GOMAXPROCS` compile processes. Left unbounded, a wide pool of either climbs
+> past the RAM the box has and the kernel reboots before it can page out. Two
+> failure modes fed the crash we saw:
+>
+> 1. **Checker leak across jobs.** A worker serves many jobs from one process,
+>    and the checker retains per-program memory between them, so a long-lived
+>    worker's resident set climbs without bound (one sequential worker walked
+>    from ~215 MB to over 8 GB across ~2000 jobs).
+> 2. **`go build` compile fan-out.** `go build` defaults `-p` to `GOMAXPROCS`,
+>    so on a 24-core box one build spawns ~24 parallel compilers at ~400 MB
+>    each, and several workers building at once multiply that into tens of GB
+>    of transient memory.
+>
+> The runner now guards both by default: it recycles a worker after
+> `-worker-max-jobs` jobs, sets a soft `GOMEMLIMIT` sized to a fraction of
+> total RAM (per process and per worker), and caps `go build -p`. Keep those
+> guards on. On a memory-tight box (24 GB or less), run with a small `-jobs`
+> (2 is safe), prefer `-lower-only` with `-limit` for quick checks, and push a
+> full build-and-run to a larger machine. See
+> [Running safely](#running-safely) before you start a run, and never lower the
+> guards below without watching resident memory.
+>
+> A few tests are quarantined outright in `expectations/denylist.txt` because
+> their lowering crashes the toolchain or exhausts memory hard enough to threaten
+> the machine. Do not remove one until the underlying gap is fixed.
+
 ## Statuses
 
 The AOT path can decline a program or claim it, and the split matters:
@@ -47,6 +77,55 @@ Useful flags:
 
 The summary ends with the top handback and fail reasons by job count.
 That table is the priority queue: the biggest handback reason is the lowering gap whose fix moves the most tests.
+
+## Running safely
+
+Read the warning at the top first. A run is memory-heavy on both halves: the
+front half holds a checker per in-flight job, and the back half spawns parallel
+compilers per build. The runner ships with guards on by default so an ordinary
+run stays inside the machine's RAM, and the flags below tune them.
+
+- `-jobs N` bounds how many workers run at once, and with them the resident
+  checkers and the concurrent builds. On a 24 GB box, `-jobs 2` is the safe
+  ceiling. This is the single most important dial.
+- `-worker-max-jobs N` (default 200) recycles a worker after it serves `N`
+  jobs, which resets the checker memory it has accumulated. `0` disables
+  recycling; do not set it to `0` on a memory-tight box.
+- A soft `GOMEMLIMIT` is set automatically to a fraction of total RAM, both for
+  the runner process and, divided by the worker count, for each worker. Override
+  the fraction with `BENTO262_MEM_FRACTION` (default `0.5`), or pin `GOMEMLIMIT`
+  in the environment to take over entirely. The limit makes the runtime collect
+  before the resident set runs away; it is a backstop, not a substitute for a
+  sane `-jobs`.
+- `go build -p` is capped (default 2) so one build cannot fan out to
+  `GOMAXPROCS` compilers. Override with `BENTO262_GO_BUILD_P`.
+- `-lower-only` runs the front half only: it lowers every job in process and
+  reports the lowered/handback split without building or running a binary. It is
+  the cheap, disk-safe way to size a lowerer change. It still holds checkers, so
+  bound it with `-jobs`, and pair it with `-limit` or `-grep` for a quick slice.
+  Unlike the full run it does not recycle a worker, so the checker's memory
+  accumulates in the one process and `GOMEMLIMIT` cannot collect it; a full-suite
+  lower-only would be OOM-killed before it reports. The runner refuses an unscoped
+  lower-only past a large job count for that reason, so scope it or use the full
+  run, which recycles workers.
+- `-min-free-disk-mb` (default 3072) aborts before staging if the cache
+  filesystem is low, so a full run cannot fill the disk mid-build.
+
+For a heavy full run, prefer a box with plenty of RAM and cores over the local
+Mac. On the Mac, stick to `-lower-only` with a `-limit`, or a narrow `-filter`
+with `-jobs 2`, and watch resident memory the first time you run a new slice.
+
+### Quarantine
+
+`expectations/denylist.txt` lists tests that must never reach a worker: a test
+whose lowering or build is known to exhaust memory or wedge the toolchain badly
+enough to threaten the machine. A denylisted line is not a failing test; it is a
+landmine skipped up front so a crash can never wedge a worker slot. Each entry
+is a path substring matched the same way `-grep` matches, with a note saying why
+it is dangerous. Quarantined tests are dropped before anything spawns and left
+out of the tallies entirely, so they do not appear in the snapshot. Point at a
+different file with `-denylist`. Remove an entry only when the underlying gap is
+fixed and a run confirms the test is safe.
 
 ## Caching
 

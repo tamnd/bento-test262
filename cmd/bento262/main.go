@@ -15,11 +15,21 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/tamnd/bento-test262/pkg/tc39"
 )
+
+// maxUnscopedLowerJobs bounds how many jobs a lower-only pass will run without a
+// --grep or --limit scoping it. The lower-only path lowers every job in one
+// process and does not recycle a worker, so the checker's live memory grows with
+// the job count until the kernel OOM-kills the process; the whole suite is far
+// past what a single process can hold. The ceiling sits well above any real
+// scoped slice, so it only trips on an accidental full-suite lower-only, which is
+// a machine-memory risk that reports nothing anyway.
+const maxUnscopedLowerJobs = 20000
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "worker" {
@@ -57,7 +67,22 @@ func runMain(args []string) error {
 		"lower every job in this process and report the lowered/handback split without building or running a binary; fast and disk-safe, use --jobs to bound resident memory")
 	minFreeMB := fs.Int64("min-free-disk-mb", 3072,
 		"abort before staging if the cache filesystem has less than this many MB free (0 = skip the check)")
+	workerMaxJobs := fs.Int("worker-max-jobs", 200,
+		"recycle a worker subprocess after this many jobs so its resident set cannot climb without bound (0 = never recycle)")
+	denyPath := fs.String("denylist", "expectations/denylist.txt",
+		"file of path substrings to quarantine (skip) entirely, one per line; for tests known to exhaust memory or wedge the toolchain")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Quarantine first, before anything spawns or lowers. A denylisted test is
+	// not a failing test; it is one whose lowering or build is known to exhaust
+	// memory or wedge the toolchain badly enough to threaten the machine, so it
+	// must never reach a worker. Skipping it up front keeps a full run off a known
+	// landmine and leaves it out of the tallies rather than recording a verdict
+	// the run dared not produce.
+	deny, err := tc39.LoadDenylist(*denyPath)
+	if err != nil {
 		return err
 	}
 
@@ -69,6 +94,24 @@ func runMain(args []string) error {
 	if capped, reason := tc39.CapWorkers(*workers); reason != "" {
 		fmt.Fprintln(os.Stderr, "bento262:", reason)
 		*workers = capped
+	}
+
+	// A worker retains checker memory across the jobs it serves, so without a
+	// ceiling a long run climbs until it OOM-kills the machine (a lower-only pass
+	// climbed past 8 GB in one process locally). Two guards bound it: a soft heap
+	// limit makes the runtime collect before the resident set runs away, and the
+	// orchestrator recycles a worker after --worker-max-jobs jobs so its peak
+	// resets. Size the limit at the RAM budget for this process (the lower-only
+	// pass lowers here) and at the per-worker share for the subprocesses, and let
+	// GOMEMLIMIT in the environment win if the caller already pinned one.
+	var memEnv []string
+	memBudget := tc39.MemoryLimitBytes()
+	if memBudget > 0 && os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(memBudget)
+		perWorker := memBudget / int64(max(*workers, 1))
+		memEnv = append(memEnv, fmt.Sprintf("BENTO262_WORKER_MEMLIMIT=%d", perWorker))
+		fmt.Fprintf(os.Stderr, "bento262: soft memory limit %d MB for this process, %d MB per worker; recycling workers every %d jobs\n",
+			memBudget>>20, perWorker>>20, *workerMaxJobs)
 	}
 
 	// A lower-only pass measures how far the front half gets, no go build, no
@@ -83,9 +126,24 @@ func runMain(args []string) error {
 			return err
 		}
 		cases = tc39.Select(cases, *grep, *limit)
+		cases, dropped := tc39.Quarantine(cases, deny)
+		if len(dropped) > 0 {
+			fmt.Printf("quarantined %d cases via %s\n", len(dropped), *denyPath)
+		}
 		jobs, precooked, err := tc39.Jobs(*ports, cases)
 		if err != nil {
 			return err
+		}
+		// A lower-only pass runs in this one process and, unlike the full run, does
+		// not recycle a worker: the typescript-go checker's per-program memory
+		// accumulates as live memory across every job, and GOMEMLIMIT cannot collect
+		// live memory. Over the whole suite that live set outgrows RAM and the kernel
+		// OOM-kills the process before it can print a report, so an unscoped
+		// full-suite lower-only is wasted effort and a machine-memory risk. Refuse it
+		// and point at the scoped uses that stay bounded; passing --grep or --limit is
+		// the explicit acknowledgement that the slice is small enough to hold.
+		if *grep == "" && *limit == 0 && len(jobs) > maxUnscopedLowerJobs {
+			return fmt.Errorf("lower-only over the whole suite (%d jobs) accumulates checker memory in one process and will be OOM-killed before it reports; scope it with --grep or --limit, or use the full run, which recycles workers", len(jobs))
 		}
 		fmt.Printf("%d cases, %d jobs (%d waiting on harness ports), lower-only with %d in flight\n",
 			len(cases), len(jobs)+len(precooked), len(precooked), *workers)
@@ -115,6 +173,10 @@ func runMain(args []string) error {
 		return err
 	}
 	cases = tc39.Select(cases, *grep, *limit)
+	cases, dropped := tc39.Quarantine(cases, deny)
+	if len(dropped) > 0 {
+		fmt.Printf("quarantined %d cases via %s\n", len(dropped), *denyPath)
+	}
 	jobs, precooked, err := tc39.Jobs(*ports, cases)
 	if err != nil {
 		return err
@@ -143,18 +205,19 @@ func runMain(args []string) error {
 	}
 
 	results, err := tc39.RunAll(jobs, tc39.RunOptions{
-		Workers:      *workers,
-		Timeout:      *jobTimeout,
-		Progress:     os.Stderr,
-		Cache:        cache,
-		TailCache:    tailCache,
-		BentoVersion: bentoVersion,
-		Env: []string{
+		Workers:          *workers,
+		Timeout:          *jobTimeout,
+		Progress:         os.Stderr,
+		Cache:            cache,
+		TailCache:        tailCache,
+		BentoVersion:     bentoVersion,
+		MaxJobsPerWorker: *workerMaxJobs,
+		Env: append([]string{
 			"BENTO_MODULE_ROOT=" + moduleRoot,
 			"BENTO262_RUN_TIMEOUT=" + runTimeout.String(),
 			"BENTO262_TAILCACHE=" + tailPath,
 			"BENTO262_RUNTIME_HASH=" + runtimeHash,
-		},
+		}, memEnv...),
 	})
 	if err != nil {
 		return err
