@@ -333,15 +333,25 @@ func PrepareModuleRoot(dir string) (root string, version string, err error) {
 // the builds stay pure link steps and the janitor never churns them. The cost is a
 // one-time bounded warm (the stdlib archive set is fixed, it does not grow across
 // the run), so disk stays flat.
+//
+// The warm must build with the same flags the per-test build uses, because a flag
+// that feeds the compile action id gives a package a different cache key. The
+// per-test build passes -trimpath, which changes every package's action id,
+// stdlib included, so a warm without it pins archives the per-test builds never
+// look up: the build then recompiles the stdlib under the trimpath key and the
+// janitor reclaims it, which is what left slices, math/big, time, and the other
+// heavier-stdlib tests failing with "could not import cmp ... no such file" even
+// after the plain std warm landed. -ldflags only affects the final link and
+// produces no compile archive, so it is not needed here.
 func WarmDeps(root string) error {
-	std := exec.Command("go", "build", "std")
+	std := exec.Command("go", "build", "-trimpath", "std")
 	std.Dir = root
 	std.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := std.CombinedOutput(); err != nil {
 		return fmt.Errorf("warm standard library build cache: %v\n%s", err, out)
 	}
 
-	warm := exec.Command("go", "build", "./pkg/value/...")
+	warm := exec.Command("go", "build", "-trimpath", "./pkg/value/...")
 	warm.Dir = root
 	warm.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := warm.CombinedOutput(); err != nil {
