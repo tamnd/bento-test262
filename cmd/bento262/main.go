@@ -41,14 +41,67 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "includes" {
+		if err := includesMain(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "bento262:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: bento262 run [flags]")
+		fmt.Fprintln(os.Stderr, "usage: bento262 run [flags] | bento262 includes [flags]")
 		os.Exit(2)
 	}
 	if err := runMain(os.Args[2:]); err != nil {
 		fmt.Fprintln(os.Stderr, "bento262:", err)
 		os.Exit(1)
 	}
+}
+
+// includesMain audits harness include coverage over the discovered corpus and
+// prints which includes have a TypeScript port and which do not, each with the
+// job reach a port would unlock. An unported include hands its whole reach back
+// on every run, so this turns that scattered per-job handback into one listed
+// gap the campaign can work down. It discovers and composes only, so it holds no
+// checker and touches no build cache; it is safe to run on any box.
+func includesMain(args []string) error {
+	fs := flag.NewFlagSet("includes", flag.ExitOnError)
+	root := fs.String("root", "test262", "path to the test262 checkout")
+	ports := fs.String("ports", "harness", "directory of TypeScript harness ports")
+	filters := fs.String("filter", "test/language,test/built-ins,test/harness", "comma-separated path prefixes to scan")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cases, err := tc39.Discover(*root, strings.Split(*filters, ","))
+	if err != nil {
+		return err
+	}
+	report, err := tc39.AuditIncludes(*ports, cases)
+	if err != nil {
+		return err
+	}
+
+	var unportedJobs, unportedFiles int
+	for _, s := range report.Unported {
+		unportedJobs += s.Jobs
+		unportedFiles += s.Files
+	}
+	fmt.Printf("unported harness includes (referenced, no %s/*.ts port), by job reach:\n", *ports)
+	if len(report.Unported) == 0 {
+		fmt.Println("  (none: every referenced include has a port)")
+	}
+	for _, s := range report.Unported {
+		fmt.Printf("  %-24s %7d jobs  %6d files\n", s.Name, s.Jobs, s.Files)
+	}
+	fmt.Printf("  total: %d unported includes gate %d jobs across %d files\n",
+		len(report.Unported), unportedJobs, unportedFiles)
+
+	fmt.Printf("\nported harness includes (%d), by job reach:\n", len(report.Ported))
+	for _, s := range report.Ported {
+		fmt.Printf("  %-24s %7d jobs  %6d files\n", s.Name, s.Jobs, s.Files)
+	}
+	return nil
 }
 
 func runMain(args []string) error {
