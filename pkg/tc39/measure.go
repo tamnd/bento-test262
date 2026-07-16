@@ -68,6 +68,15 @@ func LowerOnly(jobs []Job, precooked []Result, concurrency int, out io.Writer) L
 		return rep
 	}
 	defer func() { _ = os.RemoveAll(scratchDir) }()
+	// The front end canonicalizes a resolved sibling's path but takes the entry
+	// root as written, so on a platform whose temp dir is a symlink (macOS points
+	// /var at /private/var) a staged sibling would resolve to a path the entry
+	// never matches and the import would be declined. Canonicalize the scratch
+	// root up front so the entry and its siblings share one real prefix; this is a
+	// no-op where the temp dir is already canonical.
+	if real, err := filepath.EvalSymlinks(scratchDir); err == nil {
+		scratchDir = real
+	}
 
 	var loweredN, handbackN, frontN int
 	sem := make(chan struct{}, concurrency)
@@ -79,14 +88,22 @@ func LowerOnly(jobs []Job, precooked []Result, concurrency int, out io.Writer) L
 		go func(i int, j Job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// Each goroutine owns its own entry file so concurrent lowerings do
-			// not race on one path. No binary is ever produced from it.
-			entry := filepath.Join(scratchDir, fmt.Sprintf("t%d.ts", i))
-			if err := os.WriteFile(entry, []byte(j.Source), 0o644); err != nil {
+			// Each goroutine owns its own subdirectory so concurrent lowerings do
+			// not race on a path and a module test's siblings, which share a real
+			// base name across jobs, do not collide in one flat scratch dir. The
+			// entry rides in under t<i>.ts unless it is a module test that pins its
+			// own base name; its imported siblings are staged beside it. No binary
+			// is ever produced from any of it.
+			jobDir := filepath.Join(scratchDir, fmt.Sprintf("j%d", i))
+			if err := os.MkdirAll(jobDir, 0o755); err != nil {
 				return
 			}
-			defer func() { _ = os.Remove(entry) }()
-			_, err := build.Compile(entry)
+			defer func() { _ = os.RemoveAll(jobDir) }()
+			entry, err := stageJob(jobDir, fmt.Sprintf("t%d.ts", i), j)
+			if err != nil {
+				return
+			}
+			_, err = build.Compile(entry)
 			cntMu.Lock()
 			defer cntMu.Unlock()
 			if err == nil {
@@ -99,7 +116,10 @@ func LowerOnly(jobs []Job, precooked []Result, concurrency int, out io.Writer) L
 				return
 			}
 			frontN++
-			note("FRONT", firstLine(strings.ReplaceAll(err.Error(), entry, "t.ts")))
+			// Fold the per-job scratch prefix so identical front-end complaints
+			// aggregate; this collapses the entry and every staged sibling to a
+			// bare name at once.
+			note("FRONT", firstLine(strings.ReplaceAll(err.Error(), jobDir+string(os.PathSeparator), "")))
 		}(i, j)
 	}
 	wg.Wait()
