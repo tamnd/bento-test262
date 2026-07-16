@@ -114,12 +114,21 @@ func Select(cases []Case, grep string, limit int) []Case {
 type Job struct {
 	// ID is Rel plus the mode suffix, like path.js#strict, the key used in
 	// expectations files and reports.
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Source   string `json:"source"`
-	Async    bool   `json:"async,omitempty"`
-	NegType  string `json:"negType,omitempty"`
-	NegPhase string `json:"negPhase,omitempty"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
+	// EntryName is the file name the entry source is staged under. A module test
+	// gets its real base name so a self-import or a fixture re-exporting back into
+	// it resolves against the entry; a blank name defaults to the neutral
+	// test262.ts a single-file test rides in as.
+	EntryName string `json:"entryName,omitempty"`
+	// Modules are the sibling source files the entry statically imports, staged
+	// beside it so the front end resolves each specifier against a real file
+	// instead of declining with a cannot-find-module error.
+	Modules  []StagedModule `json:"modules,omitempty"`
+	Async    bool           `json:"async,omitempty"`
+	NegType  string         `json:"negType,omitempty"`
+	NegPhase string         `json:"negPhase,omitempty"`
 }
 
 // Jobs expands cases into concrete executions with composed sources. The
@@ -165,6 +174,17 @@ func Jobs(portsDir string, cases []Case) ([]Job, []Result, error) {
 					Name:   c.Abs,
 					Source: src,
 					Async:  c.Meta.HasFlag("async"),
+				}
+				// A module test resolves its imports against sibling files. Stage
+				// the graph it pulls in and pin the entry to its real name so a
+				// self-import or a fixture re-exporting into the test resolves.
+				if mode == "module" {
+					mods, err := resolveModuleGraph(c.Abs, c.Source)
+					if err != nil {
+						return fmt.Errorf("%s: %w", c.Rel, err)
+					}
+					j.Modules = mods
+					j.EntryName = tsExtension(filepath.Base(c.Abs))
 				}
 				if c.Meta.Negative != nil {
 					j.NegType = c.Meta.Negative.Type
