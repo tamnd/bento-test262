@@ -155,6 +155,34 @@ func resolveModuleGraph(entryPath, entrySource string) ([]StagedModule, error) {
 	return out, nil
 }
 
+// stageJob writes a job's entry source and every sibling module it imports into
+// dir, returning the path of the entry to hand the front end. A module test's
+// entry takes its real base name (EntryName) so a self-import or a fixture that
+// re-exports back into it resolves against the entry; a single-file test falls
+// back to defaultEntry. The siblings land under the .ts names their specifiers
+// resolve to, with nested directories created as needed, so the front end
+// resolves each import against a real staged file.
+func stageJob(dir, defaultEntry string, j Job) (string, error) {
+	for _, m := range j.Modules {
+		path := filepath.Join(dir, filepath.FromSlash(m.Name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(path, []byte(m.Source), 0o644); err != nil {
+			return "", err
+		}
+	}
+	name := j.EntryName
+	if name == "" {
+		name = defaultEntry
+	}
+	entry := filepath.Join(dir, name)
+	if err := os.WriteFile(entry, []byte(j.Source), 0o644); err != nil {
+		return "", err
+	}
+	return entry, nil
+}
+
 // readModuleFile reads a sibling module named by a specifier, trying the path as
 // written and then its TypeScript sibling, matching how the checker resolves a
 // .js import to a .ts source. It reports false when nothing readable sits at the

@@ -73,6 +73,15 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 		return res
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
+	// The front end canonicalizes a resolved sibling's path but takes the entry
+	// root as written, so on a platform whose temp dir is a symlink (macOS points
+	// /var at /private/var) a staged sibling would resolve to a path the entry
+	// never matches and the import would be declined. Canonicalize the scratch
+	// root up front so the entry and its siblings share one real prefix; this is a
+	// no-op where the temp dir is already canonical.
+	if real, err := filepath.EvalSymlinks(scratch); err == nil {
+		scratch = real
+	}
 
 	// The generated package has to live inside the module tree so its import of
 	// the value package resolves against the pinned module, but it is write-once
@@ -83,12 +92,15 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 	buildDir := filepath.Join(moduleRoot, "bento262-build-"+filepath.Base(scratch))
 	defer func() { _ = os.RemoveAll(buildDir) }()
 
-	// The AOT front door takes TypeScript entries only, and JavaScript is
-	// close enough to a syntactic subset that the composed test rides in
-	// under a .ts name; where the checker disagrees with sloppy JS, the job
-	// lands in handback, which is the truthful place for it today.
-	entry := filepath.Join(scratch, "test262.ts")
-	if err := os.WriteFile(entry, []byte(j.Source), 0o644); err != nil {
+	// The AOT front door takes TypeScript entries only, and JavaScript is close
+	// enough to a syntactic subset that the composed test rides in under a .ts
+	// name; where the checker disagrees with sloppy JS, the job lands in handback,
+	// which is the truthful place for it today. A module test also stages the
+	// sibling fixtures it imports and pins the entry to its real base name, so a
+	// self-import or a fixture re-exporting into it resolves; a single-file test
+	// rides in under the neutral test262.ts.
+	entry, err := stageJob(scratch, "test262.ts", j)
+	if err != nil {
 		res.Status = "crash"
 		res.Error = err.Error()
 		return res
@@ -109,9 +121,10 @@ func ExecuteAOT(j Job, moduleRoot string, runTimeout time.Duration, tail *Cache,
 			res.Status = "pass"
 			return res
 		}
-		// The scratch path changes per job; fold it away so identical
-		// front-end complaints aggregate into one reason.
-		msg := strings.ReplaceAll(err.Error(), entry, "test262.ts")
+		// The scratch path changes per job; fold it away so identical front-end
+		// complaints aggregate into one reason. Stripping the scratch prefix folds
+		// the entry and every staged sibling to a bare name at once.
+		msg := strings.ReplaceAll(err.Error(), scratch+string(os.PathSeparator), "")
 		res.Status = "handback"
 		res.Error = "front: " + firstLine(msg)
 		return res
