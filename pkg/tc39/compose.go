@@ -66,6 +66,16 @@ func Compose(portsDir string, c Case, mode string) (string, error) {
 		b.Write(inc)
 		b.WriteString("\n")
 	}
+
+	// A non-strict test may lean on a sloppy-mode implicit global through a
+	// for-of, for-in, or for-await-of binding it never declares. Give those
+	// targets a top-level var so the strict checker binds them, exactly the
+	// names the test only ever writes through the loop head. A strict or a
+	// negative test is left alone: strict wants the name error and a negative
+	// test wants its failure.
+	if mode == "sloppy" && c.Meta.Negative == nil {
+		b.WriteString(hoistSloppyForBindings(c.Source))
+	}
 	b.WriteString(c.Source)
 
 	// A module test runs under the Module goal, where the early errors differ
