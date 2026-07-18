@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // The results cache is what keeps reruns and CI fast: a job's outcome is a
@@ -54,6 +56,54 @@ func JobKey(j Job, bentoVersion string) string {
 	h.Write([]byte{0})
 	h.Write([]byte(j.Source))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// PruneResultsCaches keeps the newest keep results-*.ndjson caches under dir and
+// removes the rest, so the per-bento-version result files a long run of commits
+// produces do not accumulate on the disk. Each results cache is keyed by the bento
+// content fingerprint (results-<version>.ndjson), so a bumped compiler mints a
+// fresh one and every earlier file is dead weight the moment its version stops
+// being built. The staged module roots (pruneStagedRoots) and the go build cache
+// (the janitor) are already bounded this way; the results caches were the one
+// cross-run artifact nothing reclaimed, so they climbed unbounded across the
+// campaign. The just-loaded keepPath is always retained regardless of its age,
+// and the shared, version-less tail.ndjson never carries the results- prefix so it
+// is left alone.
+func PruneResultsCaches(dir, keepPath string, keep int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type cacheFile struct {
+		path    string
+		modTime int64
+	}
+	var files []cacheFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "results-") || !strings.HasSuffix(e.Name(), ".ndjson") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, cacheFile{filepath.Join(dir, e.Name()), info.ModTime().UnixNano()})
+	}
+	if len(files) <= keep {
+		return
+	}
+	keepAbs, _ := filepath.Abs(keepPath)
+	// Newest first, so the just-loaded keepPath sorts into the retained head.
+	sort.Slice(files, func(i, j int) bool { return files[i].modTime > files[j].modTime })
+	for i, f := range files {
+		if i < keep {
+			continue
+		}
+		if abs, _ := filepath.Abs(f.path); abs == keepAbs {
+			continue
+		}
+		_ = os.Remove(f.path)
+	}
 }
 
 // LoadCache reads the cache file; a missing file is an empty cache.
