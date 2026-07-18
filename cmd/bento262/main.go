@@ -313,10 +313,15 @@ func runMain(args []string) error {
 	fmt.Printf("%d cases, %d jobs (%d waiting on harness ports), %d workers\n",
 		len(cases), len(jobs)+len(precooked), len(precooked), *workers)
 
-	cache, err := tc39.LoadCache(filepath.Join(*cacheDir, "results-"+bentoVersion+".ndjson"))
+	resultsPath := filepath.Join(*cacheDir, "results-"+bentoVersion+".ndjson")
+	cache, err := tc39.LoadCache(resultsPath)
 	if err != nil {
 		return err
 	}
+	// Old per-version results caches are dead weight once their bento is no longer
+	// built, and nothing reclaimed them, so they climbed unbounded across the
+	// campaign. Keep the newest few (this run's included) and drop the rest.
+	tc39.PruneResultsCaches(*cacheDir, resultsPath, 3)
 
 	// The tail cache is shared across bento versions: its file name carries no
 	// version, and its key is the emitted Go plus a fingerprint of the runtime

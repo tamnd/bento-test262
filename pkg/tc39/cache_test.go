@@ -1,8 +1,10 @@
 package tc39
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestCacheStreamSurvivesNoSave proves the streamed cache is durable without a
@@ -91,5 +93,61 @@ func TestCacheCloseStreamIdempotent(t *testing.T) {
 	}
 	if err := c.CloseStream(); err != nil {
 		t.Fatalf("second close errored: %v", err)
+	}
+}
+
+// TestPruneResultsCaches proves the per-version results caches are held to the
+// newest few, so a campaign of commits does not pile them onto the disk, while
+// the just-loaded file and the shared version-less tail.ndjson always survive.
+func TestPruneResultsCaches(t *testing.T) {
+	dir := t.TempDir()
+	// Five per-version results files plus the shared tail, oldest to newest so the
+	// mod times are ordered by index.
+	names := []string{
+		"results-v1.h0000.ndjson",
+		"results-v1.h1111.ndjson",
+		"results-v1.h2222.ndjson",
+		"results-v1.h3333.ndjson",
+		"results-v1.h4444.ndjson",
+	}
+	base := time.Now().Add(-time.Hour)
+	for i, n := range names {
+		p := filepath.Join(dir, n)
+		if err := os.WriteFile(p, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mt := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail := filepath.Join(dir, "tail.ndjson")
+	if err := os.WriteFile(tail, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The oldest file stands in for the current run's keepPath, so the prune must
+	// retain it even though it is not among the newest three by mod time.
+	keep := filepath.Join(dir, "results-v1.h0000.ndjson")
+
+	PruneResultsCaches(dir, keep, 3)
+
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	// The newest three survive by mod time.
+	for _, n := range []string{"results-v1.h4444.ndjson", "results-v1.h3333.ndjson", "results-v1.h2222.ndjson"} {
+		if !exists(filepath.Join(dir, n)) {
+			t.Errorf("%s should have been kept as one of the newest three", n)
+		}
+	}
+	// The keepPath survives even though it is the oldest.
+	if !exists(keep) {
+		t.Error("the current run's results cache was pruned")
+	}
+	// The one file that is neither newest-three nor keepPath is gone.
+	if exists(filepath.Join(dir, "results-v1.h1111.ndjson")) {
+		t.Error("an old results cache outside the keep set was not pruned")
+	}
+	// The shared tail cache is never a results- file, so it stays.
+	if !exists(tail) {
+		t.Error("the shared tail cache was pruned")
 	}
 }
