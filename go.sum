@@ -18,8 +18,8 @@ github.com/peter-evans/patience v0.3.0 h1:rX0JdJeepqdQl1Sk9c9uvorjYYzL2TfgLX1adq
 github.com/peter-evans/patience v0.3.0/go.mod h1:Kmxu5sY1NmBLFSStvXjX1wS9mIv7wMcP/ubucyMOAu0=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
-github.com/tamnd/bento v0.0.0-20260723140952-b20084256f54 h1:DuTZsHZdKYjDZAnDotbC9Icalkz3sklDTdKRETFqpqE=
-github.com/tamnd/bento v0.0.0-20260723140952-b20084256f54/go.mod h1:bXX/mxfll5kkvHEel/BsvBXcu9aS4VCcC/d+ecxFC14=
+github.com/tamnd/bento v0.0.0-20260723150156-2f11758497dc h1:X2f1xpCYoccL9Hcr1nDo0l5eXo6mi87JhW/s0nqF8uw=
+github.com/tamnd/bento v0.0.0-20260723150156-2f11758497dc/go.mod h1:bXX/mxfll5kkvHEel/BsvBXcu9aS4VCcC/d+ecxFC14=
 github.com/tamnd/typescript v0.0.0-20260722183216-adb2ba1e4627 h1:P/LI1JPjh4+MRoc15K0fB0T13z4jzb1sHeplR9/Rmdc=
 github.com/tamnd/typescript v0.0.0-20260722183216-adb2ba1e4627/go.mod h1:gV4G6M8xxLNqQSRHiFOgKHlY+5YJgYPM6QwFLWllC+8=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
