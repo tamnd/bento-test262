@@ -313,7 +313,18 @@ func runMain(args []string) error {
 	fmt.Printf("%d cases, %d jobs (%d waiting on harness ports), %d workers\n",
 		len(cases), len(jobs)+len(precooked), len(precooked), *workers)
 
-	resultsPath := filepath.Join(*cacheDir, "results-"+bentoVersion+".ndjson")
+	// The results cache replays a verdict by (bento version, job id), which is
+	// only sound while the harness that produced it is unchanged. A compose.go
+	// edit or an edited port can flip a former handback into a real fail, so fold
+	// a fingerprint of the harness (its Go logic plus the ported prelude) into the
+	// cache file name. A pure bento edit keeps the harness digest and reuses the
+	// ledger for every unmoved job; a harness edit starts a fresh ledger instead
+	// of replaying a stale verdict.
+	harnessFP, err := tc39.HarnessFingerprint(*ports)
+	if err != nil {
+		return err
+	}
+	resultsPath := filepath.Join(*cacheDir, "results-"+bentoVersion+"-h"+harnessFP+".ndjson")
 	cache, err := tc39.LoadCache(resultsPath)
 	if err != nil {
 		return err
