@@ -2,10 +2,10 @@ module github.com/tamnd/bento-test262
 
 go 1.26.5
 
-replace github.com/microsoft/typescript-go => github.com/tamnd/typescript v0.0.0-20260708092706-f54e31fb4cb1
+replace github.com/microsoft/typescript-go => github.com/tamnd/typescript v0.0.0-20260722183216-adb2ba1e4627
 
 require (
-	github.com/tamnd/bento v0.0.0-20260715123139-b4a7aaf77ef9
+	github.com/tamnd/bento v0.0.0-20260723132845-2a0ee67dfe31
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1

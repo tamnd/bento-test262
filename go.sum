@@ -18,10 +18,10 @@ github.com/peter-evans/patience v0.3.0 h1:rX0JdJeepqdQl1Sk9c9uvorjYYzL2TfgLX1adq
 github.com/peter-evans/patience v0.3.0/go.mod h1:Kmxu5sY1NmBLFSStvXjX1wS9mIv7wMcP/ubucyMOAu0=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
-github.com/tamnd/bento v0.0.0-20260715123139-b4a7aaf77ef9 h1:hyLCqQLK2h29WoH/gfx/m9kwYzVb7wgFz4+7T13Eds8=
-github.com/tamnd/bento v0.0.0-20260715123139-b4a7aaf77ef9/go.mod h1:Jmf7bDAb7VUjS1HaGYExvccMYrbdaZgmTorwPT8aDpk=
-github.com/tamnd/typescript v0.0.0-20260708092706-f54e31fb4cb1 h1:ZB6UPkoJXAfFZLjvnPGr0WUwIRNfI9UibjtEaWL7o7Q=
-github.com/tamnd/typescript v0.0.0-20260708092706-f54e31fb4cb1/go.mod h1:gV4G6M8xxLNqQSRHiFOgKHlY+5YJgYPM6QwFLWllC+8=
+github.com/tamnd/bento v0.0.0-20260723132845-2a0ee67dfe31 h1:olK37RN1jF1eX8G4MU01j3rEprYFUI/bMIn4aovgUw0=
+github.com/tamnd/bento v0.0.0-20260723132845-2a0ee67dfe31/go.mod h1:bXX/mxfll5kkvHEel/BsvBXcu9aS4VCcC/d+ecxFC14=
+github.com/tamnd/typescript v0.0.0-20260722183216-adb2ba1e4627 h1:P/LI1JPjh4+MRoc15K0fB0T13z4jzb1sHeplR9/Rmdc=
+github.com/tamnd/typescript v0.0.0-20260722183216-adb2ba1e4627/go.mod h1:gV4G6M8xxLNqQSRHiFOgKHlY+5YJgYPM6QwFLWllC+8=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
 github.com/zeebo/assert v1.3.0/go.mod h1:Pq9JiuJQpG8JLJdtkwrJESF0Foym2/D9XMU5ciN/wJ0=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
