@@ -30,11 +30,35 @@ func (e *UnportedInclude) Error() string {
 	return "include not ported: " + e.Name
 }
 
+// HostContextFlag reports a test whose frontmatter asks the host to configure a
+// property of the running agent that bento's single-agent harness does not model.
+// A CanBlockIsFalse test needs the agent's [[CanBlock]] set to false so Atomics.wait
+// throws a TypeError; bento's harness runs one agent it cannot reconfigure, so the
+// test's outcome is a function of that host setting, not of the compiled program.
+// Jobs turns it into a handback, the same truthful status the missing $262 host object
+// gets, rather than a fail for a wait that ran and returned. The sibling CanBlockIsTrue
+// flag is not declined: it matches the harness's single-agent default, under which
+// Atomics.wait returns, so those tests run.
+type HostContextFlag struct {
+	Flag string
+}
+
+func (e *HostContextFlag) Error() string {
+	return "host context flag not modeled: " + e.Flag
+}
+
 // Compose builds the source a job actually executes: the mode prologue, the
 // mandatory harness ports, the ports of the test's own includes, the async
 // completion handler when the test needs it, and finally the test body. A raw
 // test runs its bytes untouched, that is the point of the flag.
 func Compose(portsDir string, c Case, mode string) (string, error) {
+	// A CanBlockIsFalse test configures the host agent's [[CanBlock]] to false, a host
+	// capability bento's single-agent harness does not model, so its Atomics.wait
+	// TypeError cannot be reproduced by running the program. Decline it before any
+	// composing so it lands in handback rather than failing when wait returns instead.
+	if c.Meta.HasFlag("CanBlockIsFalse") {
+		return "", &HostContextFlag{Flag: "CanBlockIsFalse"}
+	}
 	if mode == "raw" {
 		return c.Source, nil
 	}

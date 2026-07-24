@@ -167,6 +167,15 @@ func Jobs(portsDir string, cases []Case) ([]Job, []Result, error) {
 						})
 						continue
 					}
+					var hostFlag *HostContextFlag
+					if errors.As(err, &hostFlag) {
+						slots[i].precooked = append(slots[i].precooked, Result{
+							ID:     c.Rel + "#" + mode,
+							Status: "handback",
+							Error:  hostFlag.Error(),
+						})
+						continue
+					}
 					return fmt.Errorf("%s: %w", c.Rel, err)
 				}
 				j := Job{
