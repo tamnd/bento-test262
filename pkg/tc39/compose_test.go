@@ -105,3 +105,32 @@ func TestJobsUnportedIncludeBecomesHandback(t *testing.T) {
 		t.Errorf("precooked = %+v", r)
 	}
 }
+
+func TestJobsCanBlockIsFalseBecomesHandback(t *testing.T) {
+	dir := portsDirForTest(t)
+	cases := []Case{
+		{Rel: "test/wait.js", Source: "Atomics.wait(i32a, 0, 0, 0);\n", Meta: Meta{Flags: []string{"onlyStrict", "CanBlockIsFalse"}}},
+	}
+	jobs, precooked, err := Jobs(dir, cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 0 {
+		t.Errorf("a CanBlockIsFalse test should not run, jobs = %+v", jobs)
+	}
+	if len(precooked) != 1 {
+		t.Fatalf("precooked = %+v", precooked)
+	}
+	r := precooked[0]
+	if r.ID != "test/wait.js#strict" || r.Status != "handback" || !strings.Contains(r.Error, "CanBlockIsFalse") {
+		t.Errorf("precooked = %+v", r)
+	}
+}
+
+func TestComposeCanBlockIsTrueStillRuns(t *testing.T) {
+	dir := portsDirForTest(t)
+	c := Case{Rel: "test/wait.js", Source: "var a = 1;\n", Meta: Meta{Flags: []string{"CanBlockIsTrue"}}}
+	if _, err := Compose(dir, c, "strict"); err != nil {
+		t.Errorf("CanBlockIsTrue should compose, got %v", err)
+	}
+}
